@@ -1,0 +1,59 @@
+[paths]
+download_dir = "/Users/liyanran/github/stock/downloads"
+report_dir = "/Users/liyanran/github/stock/reports"
+archive_dir = "/Users/liyanran/github/stock/data/holdings"
+
+[ledger]
+# 填你的投资账本地址。首次运行建议用 manual：程序打开浏览器后，你手动登录并导出持仓文件。
+url = "https://example.com/your-investment-ledger"
+mode = "manual"
+open_browser = true
+download_glob = "*.csv,*.xlsx"
+wait_seconds = 600
+curl_file = ""
+cookie_file = ""
+cookie = ""
+uid = ""
+api_timeout_seconds = 30
+
+# 如果网页导出按钮稳定，可以改成 mode = "playwright"，并填 CSS/text selector。
+# mode = "playwright"
+# download_selectors = "text=导出,text=下载持仓"
+
+# 如果你已经从 Chrome Network 里 Copy as cURL 保存到本地文件，可以直接走投资账本 API：
+# mode = "tzzb_api"
+# curl_file = ".tzzb-curl"
+
+[columns]
+# 如果导出的表头不同，在这里追加别名即可，用逗号分隔。
+code = "证券代码,基金代码,代码,产品代码,symbol,code"
+name = "证券名称,基金名称,名称,产品名称,name"
+quantity = "持仓数量,可用份额,持有份额,数量,份额,quantity,shares"
+cost_price = "成本价,持仓成本价,买入均价,成本,cost_price"
+market_value = "持仓市值,市值,最新市值,market_value,value"
+profit_pct = "收益率,持仓收益率,盈亏比例,profit_pct,return_pct"
+
+[market]
+provider = "sina"
+history_days = 260
+timeout_seconds = 15
+
+[analysis]
+min_history_days = 80
+loss_alert_pct = -8.0
+gain_trim_pct = 20.0
+max_single_position_pct = 35.0
+
+[llm]
+enabled = false
+client = "openai"
+base_url = "https://api-inference.modelscope.cn/v1"
+model = "deepseek-ai/DeepSeek-V4-Pro"
+api_key_env = "MODELSCOPE_API_KEY"
+api_key_file = ""
+temperature = 0.2
+timeout_seconds = 900
+max_tokens = 65536
+stream = true
+disable_thinking = false
+reasoning_effort = ""
