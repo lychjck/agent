@@ -1,0 +1,14 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Inter', system-ui, sans-serif;
+}
+
+body {
+  @apply bg-slate-900 text-slate-50 antialiased;
+}
+
+/* 玻璃拟物卡片效果 */
+.glass-card {
+  @apply bg-slate-800/60 backdrop-blur-md border border-slate-700/50 rounded-2xl shadow-xl;
+}
