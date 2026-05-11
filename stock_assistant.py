@@ -102,6 +102,8 @@ class Holding:
     cost_price: float | None = None
     market_value: float | None = None
     profit_pct: float | None = None
+    hold_profit: float | None = None
+    day_profit: float | None = None
     source_row: dict[str, str] = dataclasses.field(default_factory=dict)
     asset_type: str = "etf"
 
@@ -481,6 +483,8 @@ def tzzb_stock_holding(row: dict[str, Any], account: dict[str, Any]) -> Holding:
         cost_price=parse_number(row.get("cost")),
         market_value=parse_number(row.get("value")),
         profit_pct=tzzb_rate_to_pct(row.get("hold_rate")),
+        hold_profit=parse_number(row.get("hold_profit")),
+        day_profit=parse_number(row.get("w_profit")),
         source_row=source_row,
         asset_type="etf",
     )
@@ -496,6 +500,8 @@ def tzzb_fund_holding(row: dict[str, Any], account: dict[str, Any]) -> Holding:
         cost_price=parse_number(row.get("cost")),
         market_value=parse_number(row.get("value")),
         profit_pct=tzzb_rate_to_pct(row.get("hold_rate")),
+        hold_profit=parse_number(row.get("hold_profit")),
+        day_profit=parse_number(row.get("w_profit")),
         source_row=source_row,
         asset_type="fund",
     )
@@ -510,7 +516,7 @@ def archive_tzzb_snapshot(snapshot: dict[str, Any], config: dict[str, Any]) -> P
     return target
 
 
-def fetch_tzzb_holdings(config: dict[str, Any]) -> tuple[list[Holding], Path]:
+def fetch_tzzb_holdings(config: dict[str, Any]) -> tuple[list[Holding], Path, dict[str, Any]]:
     ledger = config["ledger"]
     timeout = int(ledger.get("api_timeout_seconds", config.get("market", {}).get("timeout_seconds", 15)))
     cookie = cookie_from_ledger_config(ledger)
@@ -521,8 +527,18 @@ def fetch_tzzb_holdings(config: dict[str, Any]) -> tuple[list[Holding], Path]:
     log(f"请求投资账本账户列表: account_list (uid={uid})")
     account_payload = tzzb_post(TZZB_ACCOUNT_LIST, tzzb_build_params(uid, {"userid": uid}), cookie, timeout)
     account_data = tzzb_ex_data(account_payload, TZZB_ACCOUNT_LIST)
+    
+    # 提取官方汇总数据
+    summary = {
+        "total_asset": parse_number(account_data.get("total_asset")),
+        "total_profit": parse_number(account_data.get("total_profit")),
+        "day_profit": parse_number(account_data.get("day_profit")),
+        "float_profit": parse_number(account_data.get("float_profit")),
+    }
+    
     accounts = find_tzzb_account_records(account_data)
     log(f"发现 {len(accounts)} 个有效账户记录")
+    # ...
 
     snapshot: dict[str, Any] = {
         "ok": True,
@@ -565,8 +581,41 @@ def fetch_tzzb_holdings(config: dict[str, Any]) -> tuple[list[Holding], Path]:
 
     if not holdings:
         raise RuntimeError("投资账本 API 返回成功，但没有解析到任何持仓")
+        
+    merged_dict = {}
+    for h in holdings:
+        key = (h.code, h.asset_type)
+        if key not in merged_dict:
+            merged_dict[key] = h
+        else:
+            existing = merged_dict[key]
+            new_quantity = (existing.quantity or 0) + (h.quantity or 0)
+            new_market_value = (existing.market_value or 0) + (h.market_value or 0)
+            new_hold_profit = (existing.hold_profit or 0) + (h.hold_profit or 0)
+            new_day_profit = (existing.day_profit or 0) + (h.day_profit or 0)
+            
+            new_cost_price = existing.cost_price
+            new_profit_pct = existing.profit_pct
+            
+            if new_quantity > 0:
+                total_cost_value = new_market_value - new_hold_profit
+                new_cost_price = total_cost_value / new_quantity if new_quantity else 0
+                new_profit_pct = (new_hold_profit / total_cost_value * 100) if total_cost_value > 0 else 0
+                
+            import dataclasses
+            merged_dict[key] = dataclasses.replace(existing,
+                quantity=new_quantity,
+                market_value=new_market_value,
+                hold_profit=new_hold_profit,
+                day_profit=new_day_profit,
+                cost_price=new_cost_price,
+                profit_pct=new_profit_pct
+            )
+                
+    merged_holdings = list(merged_dict.values())
+        
     source = archive_tzzb_snapshot(snapshot, config)
-    return holdings, source
+    return merged_holdings, source, summary
 
 
 def newest_file(patterns: list[str], directories: list[Path], since: float | None = None) -> Path | None:
@@ -1334,7 +1383,7 @@ def run(config: dict[str, Any], holdings_file: Path | None) -> Path:
         archived = archive_holding_file(source, config)
         holdings = parse_holdings(archived, config)
     elif str(config.get("ledger", {}).get("mode", "")).strip().lower() == "tzzb_api":
-        holdings, archived = fetch_tzzb_holdings(config)
+        holdings, archived, _ = fetch_tzzb_holdings(config)
     else:
         source = open_ledger_and_download(config)
         archived = archive_holding_file(source, config)
