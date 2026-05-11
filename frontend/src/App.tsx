@@ -365,7 +365,10 @@ export default function App() {
                       <Tooltip 
                         contentStyle={{backgroundColor: 'rgba(15, 23, 42, 0.9)', border: '1px solid rgba(51, 65, 85, 0.5)', borderRadius: '12px', color: '#fff', backdropFilter: 'blur(8px)', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.5)'}} 
                         itemStyle={{color: '#e2e8f0'}}
-                        formatter={(value: any, name: string) => [`¥${Number(value).toLocaleString()}`, name]}
+                        formatter={(value, name) => [
+                          `¥${Number(value).toLocaleString()}`,
+                          String(name ?? '市值'),
+                        ]}
                       />
                     </PieChart>
                   </ResponsiveContainer>

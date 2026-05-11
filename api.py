@@ -11,7 +11,7 @@ import datetime as dt
 from stock_assistant import (
     load_config, load_env_file, ensure_dirs, fetch_tzzb_holdings,
     analyze_holdings, llm_enabled, generate_structured_llm_commentary, log,
-    fetch_bars, analyze_one
+    fetch_bars, analyze_one, holding_to_dict, analysis_result_to_dict
 )
 
 app = FastAPI(title="投资账本 API")
@@ -43,18 +43,9 @@ def get_holdings():
             
             serializable_results = []
             for h in holdings:
-                serializable_results.append({
-                    "code": h.code,
-                    "name": h.name,
-                    "quantity": h.quantity,
-                    "cost_price": h.cost_price,
-                    "market_value": h.market_value,
-                    "profit_pct": h.profit_pct,
-                    "hold_profit": h.hold_profit,
-                    "day_profit": h.day_profit,
-                    "asset_type": h.asset_type,
-                    "weight": (h.market_value / sum(item.market_value or 0 for item in holdings) * 100) if h.market_value and any(item.market_value for item in holdings) else None
-                })
+                res = holding_to_dict(h)
+                res["weight"] = (h.market_value / sum(item.market_value or 0 for item in holdings) * 100) if h.market_value and any(item.market_value for item in holdings) else None
+                serializable_results.append(res)
             
             # 优先使用 API 返回的汇总数据，如果没有则 fallback 到手动计算
             total_value = summary.get("total_asset") or sum(item.market_value or 0 for item in holdings)
@@ -130,12 +121,7 @@ async def analyze_portfolio(req: AnalyzeRequest = AnalyzeRequest()):
                 for i, holding in enumerate(holdings):
                     if holding.asset_type == "fund":
                         res = {
-                            "holding": {
-                                "code": holding.code, "name": holding.name, "quantity": holding.quantity,
-                                "cost_price": holding.cost_price, "market_value": holding.market_value,
-                                "profit_pct": holding.profit_pct, "hold_profit": holding.hold_profit, 
-                                "day_profit": holding.day_profit, "asset_type": holding.asset_type
-                            }, 
+                            "holding": holding_to_dict(holding), 
                             "ok": True, "action": "持有场外基金", "reason": "场外基金，不参与K线分析",
                             "profit_pct": holding.profit_pct, "current_value": holding.market_value,
                             "weight": holding.market_value / total_value * 100 if holding.market_value and total_value else None
@@ -150,25 +136,12 @@ async def analyze_portfolio(req: AnalyzeRequest = AnalyzeRequest()):
                         bars = fetch_bars(holding.code, config)
                         analysis_res = analyze_one(holding, bars, config, total_value)
                         
-                        # 转换 Holding 对象为 dict
-                        serializable_res = analysis_res.copy()
-                        serializable_res["holding"] = {
-                            "code": holding.code, "name": holding.name, "quantity": holding.quantity,
-                            "cost_price": holding.cost_price, "market_value": holding.market_value,
-                            "profit_pct": holding.profit_pct, "hold_profit": holding.hold_profit, 
-                            "day_profit": holding.day_profit, "asset_type": holding.asset_type
-                        }
-                        # 处理 Bar 对象
-                        if "latest" in serializable_res and hasattr(serializable_res["latest"], "date"):
-                            latest = serializable_res["latest"]
-                            serializable_res["latest"] = {
-                                "date": str(latest.date), "close": latest.close, "pct_change": latest.pct_change
-                            }
+                        serializable_res = analysis_result_to_dict(analysis_res)
                         results.append(serializable_res)
                     except Exception as e:
                         log(f"分析 {holding.code} 失败: {e}")
                         results.append({
-                            "holding": {"code": holding.code, "name": holding.name, "asset_type": holding.asset_type}, 
+                            "holding": holding_to_dict(holding), 
                             "ok": False, "action": "行情失败", "reason": str(e)
                         })
                 

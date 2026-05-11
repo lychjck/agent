@@ -2,6 +2,7 @@ import datetime as dt
 import math
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import stock_assistant as sa
@@ -90,6 +91,22 @@ class StockAssistantTest(unittest.TestCase):
         self.assertEqual(holding.market_value, 1200)
         self.assertEqual(holding.profit_pct, 20.0)
 
+
+    @patch('stock_assistant.write_report')
+    @patch('stock_assistant.report_markdown')
+    @patch('stock_assistant.analyze_holdings')
+    @patch('stock_assistant.fetch_tzzb_holdings')
+    def test_run_accepts_tzzb_summary_return(self, m_fetch, m_analyze, m_gen, m_write):
+        holding = sa.Holding(code="510300", name="300ETF")
+        m_fetch.return_value = ([holding], Path("snapshot.json"), {"total_asset": 1000})
+        m_analyze.return_value = []
+        m_gen.return_value = "report"
+        m_write.return_value = Path("report.md")
+        config = sa.DEFAULTS.copy()
+        config["ledger"] = {"mode": "tzzb_api"}
+        
+        sa.run(config, holdings_file=None)
+        m_fetch.assert_called_once()
 
 if __name__ == "__main__":
     unittest.main()

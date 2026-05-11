@@ -120,6 +120,46 @@ class Bar:
     pct_change: float
 
 
+def holding_to_dict(holding: Holding) -> dict[str, Any]:
+    return {
+        "code": holding.code,
+        "name": holding.name,
+        "quantity": holding.quantity,
+        "cost_price": holding.cost_price,
+        "market_value": holding.market_value,
+        "profit_pct": holding.profit_pct,
+        "hold_profit": holding.hold_profit,
+        "day_profit": holding.day_profit,
+        "asset_type": holding.asset_type,
+    }
+
+
+def bar_to_dict(bar: Bar | None) -> dict[str, Any] | None:
+    if bar is None:
+        return None
+    return {
+        "date": str(bar.date),
+        "open": bar.open,
+        "close": bar.close,
+        "high": bar.high,
+        "low": bar.low,
+        "volume": bar.volume,
+        "amount": bar.amount,
+        "pct_change": bar.pct_change,
+    }
+
+
+def analysis_result_to_dict(item: dict[str, Any]) -> dict[str, Any]:
+    output = dict(item)
+    holding = output.get("holding")
+    if isinstance(holding, Holding):
+        output["holding"] = holding_to_dict(holding)
+    latest = output.get("latest")
+    if isinstance(latest, Bar):
+        output["latest"] = bar_to_dict(latest)
+    return output
+
+
 TZZB_BASE_URL = "https://tzzb.10jqka.com.cn/caishen_httpserver/tzzb"
 TZZB_REFERER = "https://tzzb.10jqka.com.cn/pc/"
 TZZB_ACCOUNT_LIST = "/caishen_fund/pc/account/v1/account_list"
