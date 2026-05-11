@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { RefreshCw, TrendingUp, TrendingDown, Activity, DollarSign, Wallet, ShieldAlert, Cpu, Landmark, LineChart, PieChart as PieChartIcon, RotateCcw, Box } from 'lucide-react';
+import { RefreshCw, TrendingUp, TrendingDown, Activity, DollarSign, Wallet, ShieldAlert, Cpu, Landmark, LineChart, PieChart as PieChartIcon, RotateCcw, Box, ArrowDownUp } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, AreaChart, Area, XAxis, YAxis, CartesianGrid } from 'recharts';
 
 export default function App() {
@@ -21,6 +21,13 @@ export default function App() {
     { id: 'deepseek-ai/DeepSeek-V4-Pro', name: 'DeepSeek V4 Pro', provider: 'ModelScope' },
   ];
   const [hasError, setHasError] = useState(false);
+  
+  // Sorting state
+  const [etfSortBy, setEtfSortBy] = useState<'market_value' | 'profit_pct' | 'hold_profit'>('market_value');
+  const [etfSortOrder, setEtfSortOrder] = useState<'desc' | 'asc'>('desc');
+  const [fundSortBy, setFundSortBy] = useState<'market_value' | 'profit_pct' | 'hold_profit'>('market_value');
+  const [fundSortOrder, setFundSortOrder] = useState<'desc' | 'asc'>('desc');
+
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [klines, setKlines] = useState<any[]>([]);
   const [klineLoading, setKlineLoading] = useState(false);
@@ -38,7 +45,7 @@ export default function App() {
   const fetchHoldings = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/holdings');
+      const res = await fetch(`/api/holdings?_t=${Date.now()}`);
       const json = await res.json();
       setData(json);
       // 默认选中第一个持仓查看 K 线
@@ -131,8 +138,20 @@ export default function App() {
 
   const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
 
-  const etfHoldings = data?.holdings?.filter((h: any) => h.asset_type === 'etf') || [];
-  const fundHoldings = data?.holdings?.filter((h: any) => h.asset_type === 'fund') || [];
+  const etfHoldings = [...(data?.holdings?.filter((h: any) => h.asset_type === 'etf') || [])].sort((a, b) => {
+    const valA = a[etfSortBy] || 0;
+    const valB = b[etfSortBy] || 0;
+    return etfSortOrder === 'desc' ? valB - valA : valA - valB;
+  });
+  
+  const fundHoldings = [...(data?.holdings?.filter((h: any) => h.asset_type === 'fund') || [])].sort((a, b) => {
+    const valA = a[fundSortBy] || 0;
+    const valB = b[fundSortBy] || 0;
+    return fundSortOrder === 'desc' ? valB - valA : valA - valB;
+  });
+
+  const etfProfit = etfHoldings.reduce((sum: number, h: any) => sum + (h.hold_profit || 0), 0);
+  const fundProfit = fundHoldings.reduce((sum: number, h: any) => sum + (h.hold_profit || 0), 0);
 
   return (
     <div className="min-h-screen bg-slate-950 p-4 sm:p-6 md:p-8 xl:p-12 text-slate-100 font-sans selection:bg-indigo-500/30">
@@ -283,27 +302,49 @@ export default function App() {
                   <span className="px-3 py-1 bg-slate-800 rounded-full text-xs text-slate-400 font-medium">CNY</span>
                 </div>
                 <h3 className="text-slate-400 font-medium text-sm mb-1">总资产估算</h3>
-                <div className="text-4xl font-black text-white tracking-tight">
-                  <span className="text-2xl mr-1 opacity-50">¥</span>
-                  {data.total_value?.toLocaleString(undefined, {minimumFractionDigits: 2})}
+                <div className="flex items-baseline gap-2">
+                  <div className="text-4xl font-black text-white tracking-tight">
+                    <span className="text-2xl mr-1 opacity-50">¥</span>
+                    {data.total_value?.toLocaleString(undefined, {minimumFractionDigits: 2})}
+                  </div>
+                  {data.day_profit !== undefined && data.day_profit !== null && (
+                    <div className={`text-sm font-bold px-2 py-0.5 rounded-lg ${data.day_profit >= 0 ? 'bg-red-500/10 text-red-400' : 'bg-green-500/10 text-green-400'}`}>
+                      {data.day_profit >= 0 ? '+' : ''}{data.day_profit.toLocaleString()}
+                    </div>
+                  )}
                 </div>
               </div>
 
-              {/* Total Profit */}
+              {/* Total Profit (Split) */}
               <div className="md:col-span-4 bg-slate-900/50 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 relative overflow-hidden group">
-                <div className={`absolute -right-10 -top-10 w-40 h-40 rounded-full blur-3xl transition-colors duration-500 ${data.total_profit >= 0 ? 'bg-red-500/10 group-hover:bg-red-500/20' : 'bg-green-500/10 group-hover:bg-green-500/20'}`}></div>
-                <div className="flex justify-between items-start mb-6">
-                  <div className={`p-3 rounded-2xl ${data.total_profit >= 0 ? 'bg-red-500/10 text-red-400' : 'bg-green-500/10 text-green-400'}`}>
+                <div className="absolute -right-10 -top-10 w-40 h-40 bg-slate-800/20 rounded-full blur-3xl"></div>
+                <div className="flex justify-between items-start mb-4">
+                  <div className="p-3 bg-slate-800/50 rounded-2xl text-slate-400">
                     <DollarSign className="w-6 h-6"/>
                   </div>
-                  <span className={`flex items-center gap-1 text-sm font-bold ${data.total_profit >= 0 ? 'text-red-400' : 'text-green-400'}`}>
-                    {data.total_profit >= 0 ? <TrendingUp className="w-4 h-4"/> : <TrendingDown className="w-4 h-4"/>}
-                    {data.total_profit >= 0 ? '盈利' : '亏损'}
-                  </span>
+                  <span className="px-3 py-1 bg-slate-800 rounded-full text-xs text-slate-400 font-medium">盈亏分类</span>
                 </div>
-                <h3 className="text-slate-400 font-medium text-sm mb-1">累计盈亏</h3>
-                <div className={`text-4xl font-black tracking-tight ${data.total_profit >= 0 ? 'text-red-400' : 'text-green-400'}`}>
-                  {data.total_profit > 0 ? '+' : ''}{data.total_profit?.toLocaleString(undefined, {minimumFractionDigits: 2})}
+                
+                <div className="grid grid-cols-2 gap-4 relative z-10">
+                  <div className="space-y-1">
+                    <h3 className="text-slate-500 font-medium text-xs uppercase tracking-wider">场内 ETF</h3>
+                    <div className={`text-xl font-bold tracking-tight ${etfProfit >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+                      {etfProfit > 0 ? '+' : ''}{etfProfit.toLocaleString(undefined, {minimumFractionDigits: 1})}
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="text-slate-500 font-medium text-xs uppercase tracking-wider">场外基金</h3>
+                    <div className={`text-xl font-bold tracking-tight ${fundProfit >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+                      {fundProfit > 0 ? '+' : ''}{fundProfit.toLocaleString(undefined, {minimumFractionDigits: 1})}
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="mt-4 pt-4 border-t border-slate-800/50 flex justify-between items-end">
+                  <span className="text-slate-500 text-xs">合计盈亏</span>
+                  <div className={`text-lg font-black ${data.total_profit >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+                    ¥ {data.total_profit?.toLocaleString(undefined, {minimumFractionDigits: 2})}
+                  </div>
                 </div>
               </div>
 
@@ -324,7 +365,7 @@ export default function App() {
                       <Tooltip 
                         contentStyle={{backgroundColor: 'rgba(15, 23, 42, 0.9)', border: '1px solid rgba(51, 65, 85, 0.5)', borderRadius: '12px', color: '#fff', backdropFilter: 'blur(8px)', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.5)'}} 
                         itemStyle={{color: '#e2e8f0'}}
-                        formatter={(value: any) => [`¥${Number(value).toLocaleString()}`, '市值']}
+                        formatter={(value: any, name: string) => [`¥${Number(value).toLocaleString()}`, name]}
                       />
                     </PieChart>
                   </ResponsiveContainer>
@@ -486,9 +527,30 @@ export default function App() {
               {/* Section 1: ETFs */}
               {etfHoldings.length > 0 && (
                 <section>
-                  <div className="flex items-center gap-3 mb-6">
-                    <div className="p-2 bg-indigo-500/10 rounded-lg text-indigo-400"><LineChart className="w-5 h-5"/></div>
-                    <h2 className="text-2xl font-bold text-slate-100">场内持仓 <span className="text-slate-500 font-normal text-lg ml-2">(ETF / 股票)</span></h2>
+                  <div className="flex items-center justify-between mb-6">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-indigo-500/10 rounded-lg text-indigo-400"><LineChart className="w-5 h-5"/></div>
+                      <h2 className="text-2xl font-bold text-slate-100">场内持仓 <span className="text-slate-500 font-normal text-lg ml-2">(ETF / 股票)</span></h2>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm bg-slate-900 border border-slate-800 rounded-lg p-1">
+                      <select 
+                        className="bg-transparent text-slate-300 outline-none px-2 py-1 cursor-pointer appearance-none"
+                        value={etfSortBy}
+                        onChange={(e) => setEtfSortBy(e.target.value as any)}
+                      >
+                        <option value="market_value" className="bg-slate-900">按市值</option>
+                        <option value="profit_pct" className="bg-slate-900">按涨跌幅</option>
+                        <option value="hold_profit" className="bg-slate-900">按持仓盈亏</option>
+                      </select>
+                      <div className="w-px h-4 bg-slate-800"></div>
+                      <button 
+                        className="p-1.5 hover:bg-slate-800 rounded-md text-slate-400 transition-colors"
+                        onClick={() => setEtfSortOrder(o => o === 'desc' ? 'asc' : 'desc')}
+                        title={etfSortOrder === 'desc' ? '降序排列' : '升序排列'}
+                      >
+                        <ArrowDownUp className="w-4 h-4"/>
+                      </button>
+                    </div>
                   </div>
                   <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-5">
                     {etfHoldings.map((h: any, i: number) => (
@@ -506,9 +568,30 @@ export default function App() {
               {/* Section 2: Funds */}
               {fundHoldings.length > 0 && (
                 <section>
-                  <div className="flex items-center gap-3 mb-6">
-                    <div className="p-2 bg-amber-500/10 rounded-lg text-amber-400"><Landmark className="w-5 h-5"/></div>
-                    <h2 className="text-2xl font-bold text-slate-100">场外持仓 <span className="text-slate-500 font-normal text-lg ml-2">(公募基金)</span></h2>
+                  <div className="flex items-center justify-between mb-6">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-amber-500/10 rounded-lg text-amber-400"><Landmark className="w-5 h-5"/></div>
+                      <h2 className="text-2xl font-bold text-slate-100">场外持仓 <span className="text-slate-500 font-normal text-lg ml-2">(公募基金)</span></h2>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm bg-slate-900 border border-slate-800 rounded-lg p-1">
+                      <select 
+                        className="bg-transparent text-slate-300 outline-none px-2 py-1 cursor-pointer appearance-none"
+                        value={fundSortBy}
+                        onChange={(e) => setFundSortBy(e.target.value as any)}
+                      >
+                        <option value="market_value" className="bg-slate-900">按市值</option>
+                        <option value="profit_pct" className="bg-slate-900">按涨跌幅</option>
+                        <option value="hold_profit" className="bg-slate-900">按持仓盈亏</option>
+                      </select>
+                      <div className="w-px h-4 bg-slate-800"></div>
+                      <button 
+                        className="p-1.5 hover:bg-slate-800 rounded-md text-slate-400 transition-colors"
+                        onClick={() => setFundSortOrder(o => o === 'desc' ? 'asc' : 'desc')}
+                        title={fundSortOrder === 'desc' ? '降序排列' : '升序排列'}
+                      >
+                        <ArrowDownUp className="w-4 h-4"/>
+                      </button>
+                    </div>
                   </div>
                   <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-5">
                     {fundHoldings.map((h: any, i: number) => (
@@ -563,20 +646,30 @@ function HoldingCard({ holding, isFund = false, isActive = false, onSelect }: { 
               <span>占比 {(holding.weight || 0).toFixed(1)}%</span>
             </div>
           </div>
-          <div className={`px-2.5 py-1 rounded-lg text-sm font-bold flex items-center gap-1 ${isProfit ? 'bg-red-500/10 text-red-400' : 'bg-green-500/10 text-green-400'}`}>
-            {isProfit ? <TrendingUp className="w-3.5 h-3.5"/> : <TrendingDown className="w-3.5 h-3.5"/>}
-            {Math.abs(holding.profit_pct || 0).toFixed(2)}%
+          <div className={`px-2.5 py-1 rounded-lg text-sm font-bold flex flex-col items-end gap-0.5 ${isProfit ? 'bg-red-500/10 text-red-400' : 'bg-green-500/10 text-green-400'}`}>
+            <div className="flex items-center gap-1">
+              <span className="text-[10px] uppercase opacity-70">总盈亏</span>
+              {isProfit ? <TrendingUp className="w-3.5 h-3.5"/> : <TrendingDown className="w-3.5 h-3.5"/>}
+              <span>{holding.hold_profit > 0 ? '+' : ''}{holding.hold_profit?.toFixed(2)}</span>
+            </div>
+            <span className="text-xs opacity-80">{holding.profit_pct > 0 ? '+' : ''}{holding.profit_pct?.toFixed(2)}%</span>
           </div>
         </div>
         
-        <div className="grid grid-cols-2 gap-4 mb-4">
+        <div className="grid grid-cols-3 gap-2 mb-4">
           <div>
-            <p className="text-slate-500 text-xs mb-1">当前市值</p>
-            <p className="font-semibold text-slate-200">¥ {holding.market_value?.toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
+            <p className="text-slate-500 text-[11px] mb-1">当前市值</p>
+            <p className="font-semibold text-slate-200 text-sm">¥ {holding.market_value?.toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
           </div>
           <div>
-            <p className="text-slate-500 text-xs mb-1">成本价</p>
-            <p className="font-semibold text-slate-200">¥ {holding.cost_price?.toLocaleString(undefined, {minimumFractionDigits: 3})}</p>
+            <p className="text-slate-500 text-[11px] mb-1">今日涨跌</p>
+            <p className={`font-semibold text-sm ${holding.day_profit >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+              {holding.day_profit > 0 ? '+' : ''}{holding.day_profit?.toLocaleString(undefined, {minimumFractionDigits: 2})}
+            </p>
+          </div>
+          <div>
+            <p className="text-slate-500 text-[11px] mb-1">成本价</p>
+            <p className="font-semibold text-slate-200 text-sm">¥ {holding.cost_price?.toLocaleString(undefined, {minimumFractionDigits: 3})}</p>
           </div>
         </div>
       </div>
