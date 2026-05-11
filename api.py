@@ -39,7 +39,7 @@ def get_holdings():
     try:
         # 这里为了演示和实时性，我们可以直接调用抓取逻辑，如果配置为tzzb_api
         if str(config.get("ledger", {}).get("mode", "")).strip().lower() == "tzzb_api":
-            holdings, archived = fetch_tzzb_holdings(config)
+            holdings, archived, summary = fetch_tzzb_holdings(config)
             
             serializable_results = []
             for h in holdings:
@@ -50,17 +50,21 @@ def get_holdings():
                     "cost_price": h.cost_price,
                     "market_value": h.market_value,
                     "profit_pct": h.profit_pct,
+                    "hold_profit": h.hold_profit,
+                    "day_profit": h.day_profit,
                     "asset_type": h.asset_type,
                     "weight": (h.market_value / sum(item.market_value or 0 for item in holdings) * 100) if h.market_value and any(item.market_value for item in holdings) else None
                 })
             
-            # 返回总资产和持仓明细
-            total_value = sum(item.market_value or 0 for item in holdings)
-            total_profit = sum((item.market_value or 0) - (item.cost_price or 0) * (item.quantity or 0) for item in holdings if item.cost_price and item.quantity)
+            # 优先使用 API 返回的汇总数据，如果没有则 fallback 到手动计算
+            total_value = summary.get("total_asset") or sum(item.market_value or 0 for item in holdings)
+            total_profit = summary.get("total_profit") or sum((item.market_value or 0) - (item.cost_price or 0) * (item.quantity or 0) for item in holdings if item.cost_price and item.quantity)
+            day_profit = summary.get("day_profit")
             
             return {
                 "total_value": total_value,
                 "total_profit": total_profit,
+                "day_profit": day_profit,
                 "holdings": serializable_results
             }
         else:
@@ -117,7 +121,7 @@ async def analyze_portfolio(req: AnalyzeRequest = AnalyzeRequest()):
             elif str(config.get("ledger", {}).get("mode", "")).strip().lower() == "tzzb_api":
                 log("正在连接投资账本并同步持仓数据...")
                 yield f"data: {json.dumps({'status': '正在连接投资账本并同步持仓数据...', 'step': 1})}\n\n"
-                holdings, _ = fetch_tzzb_holdings(config)
+                holdings, _, summary = fetch_tzzb_holdings(config)
                 
                 log(f"已获取 {len(holdings)} 个标的，开始拉取行情并进行技术面分析...")
                 yield f"data: {json.dumps({'status': f'已获取 {len(holdings)} 个标的，开始拉取行情并进行技术面分析...', 'step': 2})}\n\n"
@@ -129,7 +133,8 @@ async def analyze_portfolio(req: AnalyzeRequest = AnalyzeRequest()):
                             "holding": {
                                 "code": holding.code, "name": holding.name, "quantity": holding.quantity,
                                 "cost_price": holding.cost_price, "market_value": holding.market_value,
-                                "profit_pct": holding.profit_pct, "asset_type": holding.asset_type
+                                "profit_pct": holding.profit_pct, "hold_profit": holding.hold_profit, 
+                                "day_profit": holding.day_profit, "asset_type": holding.asset_type
                             }, 
                             "ok": True, "action": "持有场外基金", "reason": "场外基金，不参与K线分析",
                             "profit_pct": holding.profit_pct, "current_value": holding.market_value,
@@ -150,7 +155,8 @@ async def analyze_portfolio(req: AnalyzeRequest = AnalyzeRequest()):
                         serializable_res["holding"] = {
                             "code": holding.code, "name": holding.name, "quantity": holding.quantity,
                             "cost_price": holding.cost_price, "market_value": holding.market_value,
-                            "profit_pct": holding.profit_pct, "asset_type": holding.asset_type
+                            "profit_pct": holding.profit_pct, "hold_profit": holding.hold_profit, 
+                            "day_profit": holding.day_profit, "asset_type": holding.asset_type
                         }
                         # 处理 Bar 对象
                         if "latest" in serializable_res and hasattr(serializable_res["latest"], "date"):
