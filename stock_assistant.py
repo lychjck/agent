@@ -90,7 +90,8 @@ DEFAULTS: dict[str, Any] = {
 
 
 def log(message: str) -> None:
-    print(message, file=sys.stderr, flush=True)
+    now = dt.datetime.now().strftime("%H:%M:%S")
+    print(f"[{now}] {message}", file=sys.stderr, flush=True)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -102,6 +103,7 @@ class Holding:
     market_value: float | None = None
     profit_pct: float | None = None
     source_row: dict[str, str] = dataclasses.field(default_factory=dict)
+    asset_type: str = "etf"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -480,6 +482,7 @@ def tzzb_stock_holding(row: dict[str, Any], account: dict[str, Any]) -> Holding:
         market_value=parse_number(row.get("value")),
         profit_pct=tzzb_rate_to_pct(row.get("hold_rate")),
         source_row=source_row,
+        asset_type="etf",
     )
 
 
@@ -494,6 +497,7 @@ def tzzb_fund_holding(row: dict[str, Any], account: dict[str, Any]) -> Holding:
         market_value=parse_number(row.get("value")),
         profit_pct=tzzb_rate_to_pct(row.get("hold_rate")),
         source_row=source_row,
+        asset_type="fund",
     )
 
 
@@ -514,10 +518,11 @@ def fetch_tzzb_holdings(config: dict[str, Any]) -> tuple[list[Holding], Path]:
     if not uid:
         raise RuntimeError("没有从 Cookie 中解析到 userid，请在 config.toml 的 ledger.uid 或环境变量 TZZB_UID 中指定")
 
-    log("请求投资账本账户列表: account_list")
+    log(f"请求投资账本账户列表: account_list (uid={uid})")
     account_payload = tzzb_post(TZZB_ACCOUNT_LIST, tzzb_build_params(uid, {"userid": uid}), cookie, timeout)
     account_data = tzzb_ex_data(account_payload, TZZB_ACCOUNT_LIST)
     accounts = find_tzzb_account_records(account_data)
+    log(f"发现 {len(accounts)} 个有效账户记录")
 
     snapshot: dict[str, Any] = {
         "ok": True,
@@ -529,13 +534,15 @@ def fetch_tzzb_holdings(config: dict[str, Any]) -> tuple[list[Holding], Path]:
     holdings: list[Holding] = []
 
     for index, account in enumerate(accounts):
+        account_name = first_record_value(account, ("manualname", "fundname"))
         params = tzzb_stock_params(account)
         if any(params.values()):
-            log(f"请求股票/ETF持仓: account_index={index}")
+            log(f"[{index+1}/{len(accounts)}] 请求股票/ETF持仓: {account_name}")
             payload = tzzb_post(TZZB_STOCK_POSITION, tzzb_build_params(uid, params), cookie, timeout)
             data = tzzb_ex_data(payload, TZZB_STOCK_POSITION)
             snapshot["stock_positions"].append({"account_index": index, "request": params, "data": data})
             position_rows = data.get("position", []) if isinstance(data, dict) else []
+            log(f"  - 发现 {len(position_rows)} 条股票/ETF持仓")
             for row in position_rows:
                 if isinstance(row, dict):
                     holding = tzzb_stock_holding(row, account)
@@ -544,11 +551,12 @@ def fetch_tzzb_holdings(config: dict[str, Any]) -> tuple[list[Holding], Path]:
 
         fundid = tzzb_fund_id(account)
         if fundid:
-            log(f"请求基金持仓: account_index={index}")
+            log(f"[{index+1}/{len(accounts)}] 请求基金持仓: {account_name}")
             payload = tzzb_post(TZZB_FUND_POSITION, tzzb_build_params(uid, {"fundid": fundid}), cookie, timeout)
             data = tzzb_ex_data(payload, TZZB_FUND_POSITION)
             snapshot["fund_positions"].append({"account_index": index, "request": {"fundid": fundid}, "data": data})
             position_rows = data.get("position", []) if isinstance(data, dict) else []
+            log(f"  - 发现 {len(position_rows)} 条基金持仓")
             for row in position_rows:
                 if isinstance(row, dict):
                     holding = tzzb_fund_holding(row, account)
@@ -739,8 +747,42 @@ def fetch_eastmoney_bars(code: str, config: dict[str, Any]) -> list[Bar]:
     return bars
 
 
+def fetch_wangge_bars(code: str, config: dict[str, Any]) -> list[Bar]:
+    market = config["market"]
+    # 转换为 wangge 接口需要的格式，如果是 6 开头加 SH. 等
+    symbol = extract_code(code)
+    # yinglian.site 的 /api/klines/daily?symbol=xxx
+    url = f"https://yinglian.site/api/klines/daily?symbol={symbol}"
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(request, timeout=int(market["timeout_seconds"])) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    
+    rows = payload.get("data") or []
+    bars: list[Bar] = []
+    for row in rows:
+        bars.append(
+            Bar(
+                date=dt.datetime.strptime(row["timestamp"].split(" ")[0], "%Y-%m-%d").date(),
+                open=float(row["open"]),
+                close=float(row["close"]),
+                high=float(row["high"]),
+                low=float(row["low"]),
+                volume=float(row.get("volume") or 0),
+                amount=float(row.get("amount") or 0),
+                pct_change=float(row.get("change_pct") or 0),
+            )
+        )
+    bars.sort(key=lambda bar: bar.date)
+    return bars
+
+
 def fetch_bars(code: str, config: dict[str, Any]) -> list[Bar]:
     provider = str(config["market"].get("provider", "sina")).lower()
+    if provider == "wangge" or provider == "yinglian":
+        try:
+            return fetch_wangge_bars(code, config)
+        except Exception as e:
+            log(f"Wangge 行情获取失败: {e}，尝试切换备用源")
     if provider == "eastmoney":
         try:
             return fetch_eastmoney_bars(code, config)
@@ -803,18 +845,26 @@ def fmt(value: float | None, suffix: str = "", digits: int = 2) -> str:
     return f"{value:.{digits}f}{suffix}"
 
 
+def get_attr(obj: Any, key: str, default: Any = None) -> Any:
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
 def compact_result_for_llm(item: dict[str, Any]) -> dict[str, Any]:
-    holding: Holding = item["holding"]
+    holding = item["holding"]
     latest = item.get("latest")
     return {
-        "code": holding.code,
-        "name": holding.name,
-        "quantity": holding.quantity,
-        "cost_price": holding.cost_price,
-        "market_value": holding.market_value,
-        "latest_date": str(latest.date) if latest else None,
-        "latest_close": latest.close if latest else None,
-        "daily_pct_change": latest.pct_change if latest else None,
+        "code": get_attr(holding, "code"),
+        "name": get_attr(holding, "name"),
+        "quantity": get_attr(holding, "quantity"),
+        "cost_price": get_attr(holding, "cost_price"),
+        "market_value": get_attr(holding, "market_value"),
+        "latest_date": str(get_attr(latest, "date")) if latest else None,
+        "latest_close": get_attr(latest, "close"),
+        "daily_pct_change": get_attr(latest, "pct_change"),
         "ma20": item.get("ma20"),
         "ma60": item.get("ma60"),
         "ma120": item.get("ma120"),
@@ -953,16 +1003,86 @@ def urllib_llm(messages: list[dict[str, str]], config: dict[str, Any], api_key: 
     raise RuntimeError(f"LLM 返回为空: {json.dumps(payload, ensure_ascii=False)[:1000]}")
 
 
-def call_llm(messages: list[dict[str, str]], config: dict[str, Any]) -> str:
+def call_llm(messages: list[dict[str, str]], config: dict[str, Any], model_override: str | None = None) -> str:
     llm = config["llm"]
     base_url = str(llm["base_url"]).rstrip("/")
+    model = model_override or llm["model"]
+    log(f"正在调用 LLM: {base_url} (model={model})")
     api_key = llm_api_key(llm)
+    
+    # ... keep remaining logic but use the local 'model' variable ...
     if not api_key and (base_url.startswith("https://api-inference.modelscope.cn") or base_url.startswith("https://easyrouter.io")):
         env_name = str(llm.get("api_key_env", "")).strip() or "LLM_API_KEY"
         raise RuntimeError(f"LLM API key 未配置，请设置环境变量 {env_name} 或在 .env 中写入 {env_name}=...")
+    
+    # 修改原本直接从 llm["model"] 取值的逻辑，改为使用 model 变量
+    actual_config = config.copy()
+    actual_config["llm"] = llm.copy()
+    actual_config["llm"]["model"] = model
+    
     if str(llm.get("client", "openai")).strip().lower() == "openai":
-        return openai_client_llm(messages, config, api_key)
-    return urllib_llm(messages, config, api_key)
+        return openai_client_llm(messages, actual_config, api_key)
+    return urllib_llm(messages, actual_config, api_key)
+
+
+def generate_structured_llm_commentary(results: list[dict[str, Any]], config: dict[str, Any], model_override: str | None = None) -> str | None:
+    if not llm_enabled(config):
+        return None
+    log(f"准备 LLM 诊断数据，标的数量: {len(results)}")
+    payload = {
+        "generated_at": dt.datetime.now().isoformat(timespec="minutes"),
+        "rule_engine": {
+            "ma20_ma60_ma120": "最近 20/60/120 个交易日收盘价均线",
+            "ret5_pct_ret20_pct": "最近 5/20 个交易日收盘价涨跌幅",
+            "rsi14": "最近 14 个交易日 RSI",
+            "drawdown_from_120d_high_pct": "最新收盘价相对最近 120 个交易日最高收盘价的回撤",
+            "volatility20_pct": "最近 20 个交易日收益率标准差",
+            "volume_ratio": "最新成交量 / 前 20 个交易日平均成交量",
+            "profit_pct": "持仓收益率，优先使用持仓文件里的收益率；缺失时用最新价和成本价估算",
+            "portfolio_weight_pct": "单只 ETF 市值 / 当前持仓总市值",
+        },
+        "holdings": [compact_result_for_llm(item) for item in results],
+    }
+    
+    json_schema = '''{
+  "summary": {
+    "health_score": 75,
+    "status": "良好", 
+    "brief": "整体仓位分配合理..."
+  },
+  "risk_tags": ["半导体集中度高"],
+  "action_items": [
+    {
+      "type": "reduce",
+      "target": "华夏半导体ETF",
+      "reason": "已积累较大涨幅且偏离均线..."
+    }
+  ],
+  "detailed_analysis": "### 1. 资产配置评估\\n..."
+}'''
+
+    prompt = (
+        "/no_think\n"
+        "请作为专业投资顾问，基于下面 JSON 里的 ETF 持仓、技术指标和规则信号，进行分析。\n"
+        "要求：\n"
+        "1. 必须并且只能输出 JSON 格式的结果，不要输出任何多余的废话和 markdown 包裹。\n"
+        f"2. 返回的 JSON 必须严格遵守以下结构：\n{json_schema}\n"
+        "3. 只能使用 JSON 中的数据，不要编造新闻、宏观信息。\n"
+        "4. action_items 的 type 只能是 'reduce', 'hold', 'buy', 'rebalance' 之一。\n"
+        "5. detailed_analysis 需要使用 Markdown 语法进行详细分析排版。\n\n"
+        f"持仓数据 JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+    return call_llm(
+        [
+            {
+                "role": "system",
+                "content": "你是一个严格遵循 JSON 格式输出的中文 ETF 投资顾问。不要输出除 JSON 以外的任何内容。",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        config,
+        model_override=model_override
+    )
 
 
 def generate_llm_commentary(results: list[dict[str, Any]], config: dict[str, Any]) -> str | None:
@@ -1120,6 +1240,17 @@ def analyze_holdings(holdings: list[Holding], config: dict[str, Any]) -> list[di
     total_value = sum(item.market_value or 0 for item in holdings) or None
     results: list[dict[str, Any]] = []
     for holding in holdings:
+        if holding.asset_type == "fund":
+            results.append({
+                "holding": holding, 
+                "ok": True, 
+                "action": "持有场外基金", 
+                "reason": "场外基金，不参与K线分析",
+                "profit_pct": holding.profit_pct,
+                "current_value": holding.market_value,
+                "weight": holding.market_value / total_value * 100 if holding.market_value and total_value else None
+            })
+            continue
         try:
             log(f"拉取行情并分析: {holding.code} {holding.name}")
             bars = fetch_bars(holding.code, config)

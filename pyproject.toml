@@ -5,6 +5,9 @@ description = "Local ETF position assistant with Tonghuashun ledger API integrat
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "fastapi>=0.136.1",
     "openai>=1.68.2",
     "playwright>=1.59.0",
+    "pydantic>=2.13.4",
+    "uvicorn>=0.46.0",
 ]
