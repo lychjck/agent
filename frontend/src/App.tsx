@@ -92,6 +92,7 @@ export default function App() {
     { id: 'deepseek-ai/DeepSeek-V4-Pro', name: 'DeepSeek V4 Pro', provider: 'ModelScope' },
   ];
   const [hasError, setHasError] = useState(false);
+  const [activeTab, setActiveTab] = useState<'overview' | 'profile' | 'analysis'>('overview');
   
   // Sorting state
   const [etfSortBy, setEtfSortBy] = useState<'market_value' | 'profit_pct' | 'hold_profit'>('market_value');
@@ -169,6 +170,7 @@ export default function App() {
   };
 
   const handleAnalyze = async (resumeData: any[] | null = null) => {
+    setActiveTab('analysis');
     setAnalyzing(true);
     setHasError(false);
     if (!resumeData) {
@@ -299,8 +301,33 @@ export default function App() {
           </div>
         </header>
 
+        {/* Navigation Tabs */}
+        {!loading && data?.holdings && (
+          <div className="flex space-x-2 bg-slate-900/50 p-1.5 rounded-2xl border border-slate-800 w-fit shadow-inner">
+            <button 
+              onClick={() => setActiveTab('overview')} 
+              className={`px-6 py-2.5 rounded-xl text-sm font-bold transition-all ${activeTab === 'overview' ? 'bg-indigo-500 shadow-md shadow-indigo-500/20 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
+            >
+              资产总览
+            </button>
+            <button 
+              onClick={() => setActiveTab('profile')} 
+              className={`px-6 py-2.5 rounded-xl text-sm font-bold transition-all ${activeTab === 'profile' ? 'bg-cyan-500 shadow-md shadow-cyan-500/20 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
+            >
+              组合画像
+            </button>
+            <button 
+              onClick={() => setActiveTab('analysis')} 
+              className={`px-6 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'analysis' ? 'bg-purple-500 shadow-md shadow-purple-500/20 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
+            >
+              AI 诊断
+              {(aiData || analyzing) && <span className={`w-2 h-2 rounded-full ${analyzing ? 'bg-amber-400 animate-pulse' : 'bg-purple-300'}`}></span>}
+            </button>
+          </div>
+        )}
+
         {/* Analysis Progress Logs */}
-        {(analyzing || analysisLogs.length > 0) && (
+        {activeTab === 'analysis' && (analyzing || analysisLogs.length > 0) && (
           <section className="bg-slate-900/80 backdrop-blur-2xl border border-indigo-500/30 rounded-3xl p-6 shadow-[0_0_50px_-12px_rgba(99,102,241,0.3)] animate-in fade-in zoom-in duration-500 relative overflow-hidden group/logs">
             <div className="absolute top-4 right-4 z-10">
                {analysisLogs.length > 0 && !analyzing && (
@@ -387,7 +414,8 @@ export default function App() {
           <main className="space-y-12">
             
             {/* Top Dashboard Metrics */}
-            <section className="grid grid-cols-1 md:grid-cols-12 gap-6">
+            {activeTab === 'overview' && (
+            <section className="grid grid-cols-1 md:grid-cols-12 gap-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
               {/* Total Value */}
               <div className="md:col-span-4 bg-slate-900/50 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 relative overflow-hidden group">
                 <div className="absolute -right-10 -top-10 w-40 h-40 bg-blue-500/10 rounded-full blur-3xl group-hover:bg-blue-500/20 transition-colors duration-500"></div>
@@ -469,7 +497,11 @@ export default function App() {
                 </div>
               </div>
             </section>
+            )}
 
+            {/* Profile Loading/Error/Panel (only shows in profile tab) */}
+            {activeTab === 'profile' && (
+              <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
             {profileLoading ? (
               <section className="bg-slate-900/50 border border-slate-800 rounded-3xl p-8 flex items-center gap-4">
                 <RefreshCw className="w-5 h-5 animate-spin text-indigo-400" />
@@ -501,8 +533,18 @@ export default function App() {
                 onRefreshClassification={() => fetchProfile(true)}
                 onUpdateProfile={(newProfile) => setProfile(newProfile)}
               />            ) : null}
+              </div>
+            )}
 
             {/* AI Analysis Result Panel (only shows when aiData exists) */}
+            {activeTab === 'analysis' && (
+              <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                {!aiData && !analyzing && analysisLogs.length === 0 && (
+                  <div className="text-center py-20 text-slate-500 bg-slate-900/30 rounded-3xl border border-slate-800/50 border-dashed">
+                    <Cpu className="w-12 h-12 mx-auto mb-4 opacity-20" />
+                    <p>点击右上角的“一键启动 AI 诊断”开始分析您的持仓</p>
+                  </div>
+                )}
             {aiData && (
               <section className="relative group">
                 <div className="absolute -inset-1 bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 rounded-[2rem] blur opacity-25 group-hover:opacity-40 transition duration-1000 group-hover:duration-200"></div>
@@ -577,8 +619,12 @@ export default function App() {
                 </div>
               </section>
             )}
+              </div>
+            )}
 
             {/* Market Trend Analysis (K-Line Chart) */}
+            {activeTab === 'overview' && (
+              <div className="space-y-12 animate-in fade-in slide-in-from-bottom-4 duration-500">
             <section className="bg-slate-900/50 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 md:p-8">
               <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
                 <div className="flex items-center gap-3">
@@ -737,6 +783,8 @@ export default function App() {
               )}
 
             </div>
+              </div>
+            )}
           </main>
         ) : (
           <div className="bg-slate-900/50 backdrop-blur-xl border border-slate-800 rounded-3xl p-16 text-center text-slate-400 flex flex-col items-center shadow-2xl">
