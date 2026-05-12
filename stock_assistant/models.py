@@ -42,6 +42,64 @@ class InstrumentClassification:
     evidence: tuple[dict[str, str], ...] = ()
     reviewed_by_user: bool = False
 
+@dataclasses.dataclass(frozen=True)
+class RiskFlag:
+    id: str
+    code: str
+    label: str
+    severity: str
+    evidence: tuple[str, ...]
+
+@dataclasses.dataclass(frozen=True)
+class CandidateAction:
+    id: str
+    type: str
+    target_code: str
+    target_name: str
+    priority: str
+    reason: str
+    evidence: tuple[str, ...]
+    reason_code: str = ""
+    current_weight_pct: float | None = None
+    target_weight_pct: float | None = None
+    current_value: float | None = None
+    target_value: float | None = None
+    delta_value: float | None = None
+    delta_weight_pct: float | None = None
+    constraint: str = ""
+    source: str = "rule_engine"
+    requires_user_confirmation: bool = True
+
+def risk_flag_to_dict(flag: RiskFlag) -> dict[str, Any]:
+    return {
+        "id": flag.id,
+        "code": flag.code,
+        "label": flag.label,
+        "severity": flag.severity,
+        "evidence": list(flag.evidence),
+    }
+
+def candidate_action_to_dict(action: CandidateAction) -> dict[str, Any]:
+    return {
+        "id": action.id,
+        "type": action.type,
+        "target_code": action.target_code,
+        "target_name": action.target_name,
+        "priority": action.priority,
+        "reason": action.reason,
+        "evidence": list(action.evidence),
+        "reason_code": action.reason_code,
+        "current_weight_pct": action.current_weight_pct,
+        "target_weight_pct": action.target_weight_pct,
+        "current_value": action.current_value,
+        "target_value": action.target_value,
+        "delta_value": action.delta_value,
+        "delta_weight_pct": action.delta_weight_pct,
+        "constraint": action.constraint,
+        "source": action.source,
+        "requires_user_confirmation": action.requires_user_confirmation,
+    }
+
 def holding_to_dict(holding: Holding) -> dict[str, Any]:
     return {
         "code": holding.code,

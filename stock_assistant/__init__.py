@@ -4,7 +4,14 @@ from .cli import run
 from .config import DEFAULTS, DEFAULT_CONFIG, ensure_dirs, load_config
 from .llm import generate_structured_llm_commentary, llm_enabled, generate_llm_commentary
 from .market import fetch_bars
-from .models import Bar, Holding, InstrumentClassification, analysis_result_to_dict, holding_to_dict, bar_to_dict
+from .memory import (
+    save_agent_snapshot,
+    load_latest_agent_snapshot,
+    diff_agent_snapshots,
+    build_agent_snapshot,
+    list_agent_snapshots,
+)
+from .models import Bar, Holding, InstrumentClassification, RiskFlag, CandidateAction, analysis_result_to_dict, holding_to_dict, bar_to_dict
 from .portfolio import generate_portfolio_observations, summarize_portfolio, value_map_to_pct
 from .report import report_markdown, write_report
 from .search import build_search_provider, suggest_classification_with_search, TavilySearchProvider, BraveSearchProvider, score_classification_evidence
