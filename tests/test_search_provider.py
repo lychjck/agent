@@ -117,6 +117,17 @@ class TestSearchProvider(unittest.TestCase):
         self.assertTrue(llm["disable_thinking"])
         self.assertFalse(llm["stream"])
 
+    def test_classification_llm_config_can_carry_log_context(self):
+        llm_config = classification_llm_config({
+            "classification": {
+                "llm": {
+                    "enabled": True,
+                    "log_context": "classification code=000001"
+                }
+            }
+        })
+        self.assertEqual(llm_config["llm"]["log_context"], "classification code=000001")
+
     def test_score_classification_evidence(self):
         config = {
             "search": {
