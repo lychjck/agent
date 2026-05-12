@@ -9,9 +9,38 @@ from typing import Any
 
 from .models import Holding, Bar
 
-def log(message: str) -> None:
-    now = dt.datetime.now().strftime("%H:%M:%S")
-    print(f"[{now}] {message}", file=sys.stderr, flush=True)
+import logging
+
+# 配置一个全局的基础 Logger
+logger = logging.getLogger("stock_assistant")
+
+def setup_basic_logging(level: int = logging.INFO) -> None:
+    """初始化基础日志配置"""
+    handler = logging.StreamHandler(sys.stderr)
+    formatter = logging.Formatter(
+        "[%(asctime)s] [%(levelname)-7s] [%(name)s] %(message)s",
+        datefmt="%H:%M:%S"
+    )
+    handler.setFormatter(formatter)
+    
+    # 清除旧的 handlers 避免重复打印
+    root = logging.getLogger()
+    if root.handlers:
+        for h in root.handlers:
+            root.removeHandler(h)
+            
+    root.addHandler(handler)
+    root.setLevel(level)
+
+def log(message: str, level: str = "INFO", name: str = "core") -> None:
+    """
+    统一日志输出。
+    兼容旧调用: log("message")
+    支持新调用: log("message", level="ERROR", name="api")
+    """
+    current_logger = logging.getLogger(f"stock_assistant.{name}")
+    lvl = getattr(logging, level.upper(), logging.INFO)
+    current_logger.log(lvl, message)
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     merged = dict(base)

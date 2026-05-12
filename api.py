@@ -13,6 +13,11 @@ from stock_assistant import (
     analyze_holdings, llm_enabled, generate_structured_llm_commentary, log,
     fetch_bars, analyze_one, holding_to_dict, analysis_result_to_dict
 )
+from stock_assistant.cli import build_portfolio_profile
+from stock_assistant.utils import setup_basic_logging
+
+# 初始化日志系统
+setup_basic_logging()
 
 app = FastAPI(title="投资账本 API")
 
@@ -35,11 +40,11 @@ class AnalyzeRequest(BaseModel):
 
 @app.get("/api/holdings")
 def get_holdings():
-    # 尝试从 tzzb API 抓取最新数据或从本地归档读取
+    log("GET /api/holdings - 开始获取持仓数据", name="api")
     try:
-        # 这里为了演示和实时性，我们可以直接调用抓取逻辑，如果配置为tzzb_api
         if str(config.get("ledger", {}).get("mode", "")).strip().lower() == "tzzb_api":
             holdings, archived, summary = fetch_tzzb_holdings(config)
+            log(f"成功获取 {len(holdings)} 条持仓记录", name="api")
             
             serializable_results = []
             for h in holdings:
@@ -47,7 +52,6 @@ def get_holdings():
                 res["weight"] = (h.market_value / sum(item.market_value or 0 for item in holdings) * 100) if h.market_value and any(item.market_value for item in holdings) else None
                 serializable_results.append(res)
             
-            # 优先使用 API 返回的汇总数据，如果没有则 fallback 到手动计算
             total_value = summary.get("total_asset") or sum(item.market_value or 0 for item in holdings)
             total_profit = summary.get("total_profit") or sum((item.market_value or 0) - (item.cost_price or 0) * (item.quantity or 0) for item in holdings if item.cost_price and item.quantity)
             day_profit = summary.get("day_profit")
@@ -59,9 +63,65 @@ def get_holdings():
                 "holdings": serializable_results
             }
         else:
+            log("获取持仓失败: 模式不支持", level="ERROR", name="api")
             return {"error": "当前仅支持 tzzb_api 模式作为后端源。请在 config.toml 设置 [ledger] mode='tzzb_api'"}
     except Exception as e:
-        log(f"获取持仓失败: {e}")
+        log(f"GET /api/holdings 发生异常: {str(e)}", level="ERROR", name="api")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/profile")
+def get_profile(refresh_classification: bool = False):
+    log(f"GET /api/profile - 开始生成组合画像 (refresh={refresh_classification})", name="api")
+    try:
+        profile = build_portfolio_profile(
+            config,
+            holdings_file=None,
+            refresh_classification=refresh_classification,
+        )
+        log("组合画像生成成功", name="api")
+        return profile
+    except Exception as e:
+        log(f"GET /api/profile 发生异常: {str(e)}", level="ERROR", name="api")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/classify/{code}")
+def classify_one(code: str):
+    log(f"POST /api/classify/{code} - 强制触发单个标的分类", name="api")
+    try:
+        from stock_assistant.cli import load_profile_holdings
+        from stock_assistant.search import suggest_classification_with_search
+        
+        holdings, _, _ = load_profile_holdings(config, holdings_file=None)
+        holding = next((h for h in holdings if h.code == code), None)
+        
+        if not holding:
+            log(f"分类失败: 未找到持仓 {code}", level="WARN", name="api")
+            raise HTTPException(status_code=404, detail=f"未找到代码为 {code} 的持仓")
+            
+        cls = suggest_classification_with_search(holding, config)
+        if not cls:
+            log(f"分类失败: AI 搜索未返回结果 {code}", level="ERROR", name="api")
+            raise HTTPException(status_code=500, detail="AI 分类搜索未能返回结果")
+            
+        log(f"成功完成分类: {code} -> {cls.asset_class}", name="api")
+        return {
+            "code": cls.code,
+            "name": cls.name,
+            "asset_class": cls.asset_class,
+            "sector": cls.sector,
+            "theme": cls.theme,
+            "region": cls.region,
+            "strategy": cls.strategy,
+            "tracked_index": cls.tracked_index,
+            "issuer": cls.issuer,
+            "confidence": cls.confidence,
+            "source": cls.source,
+            "reviewed_by_user": cls.reviewed_by_user,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log(f"POST /api/classify/{code} 发生异常: {str(e)}", level="ERROR", name="api")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/klines")

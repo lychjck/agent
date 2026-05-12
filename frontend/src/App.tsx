@@ -1,11 +1,82 @@
 import { useState, useEffect } from 'react';
+import type { ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { RefreshCw, TrendingUp, TrendingDown, Activity, DollarSign, Wallet, ShieldAlert, Cpu, Landmark, LineChart, PieChart as PieChartIcon, RotateCcw, Box, ArrowDownUp } from 'lucide-react';
+import { RefreshCw, TrendingUp, TrendingDown, Activity, DollarSign, Wallet, ShieldAlert, Cpu, Landmark, LineChart, PieChart as PieChartIcon, RotateCcw, Box, ArrowDownUp, Database, Layers, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, AreaChart, Area, XAxis, YAxis, CartesianGrid } from 'recharts';
+
+const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
+
+const formatMoney = (value: any) => `¥ ${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const formatPct = (value: any) => `${Number(value || 0).toFixed(2)}%`;
+const labelOf = (key: string) => ({
+  // 资产大类
+  broad_index: '宽基指数',
+  sector_equity: '行业权益',
+  theme_equity: '主题权益',
+  thematic_equity: '主题权益',
+  active_equity: '主动权益',
+  mixed_allocation: '混合型',
+  bond: '个债',
+  bond_fund: '债券基金',
+  overseas: '海外资产',
+  qdii: 'QDII 基金',
+  commodity: '商品基金',
+  cash: '现金等价物',
+  money_market: '货币基金',
+  active_fund: '主动管理',
+  fof: 'FOF 基金',
+
+  // 行业
+  financials: '金融',
+  semiconductor: '半导体',
+  technology: '科技/信息技术',
+  healthcare: '医疗/医药',
+  consumer: '消费',
+  energy: '能源',
+  materials: '材料',
+  industrials: '工业',
+  military: '军工/航天',
+  agriculture: '农业',
+  real_estate: '房地产',
+  infrastructure: '基建',
+  media: '传媒/互联网',
+  dividend: '红利',
+  multi_sector: '多行业',
+
+  // 策略
+  passive_index: '被动指数',
+  active_management: '主动管理',
+  enhanced_index: '指数增强',
+  bond_income: '债券收益',
+  commodity_tracking: '商品跟踪',
+
+  // 区域/其他
+  china_a: '中国 A 股',
+  etf: '场内',
+  fund: '场外',
+  unknown: '未知',
+  "": '不适用',
+
+  // 来源
+  config: '手动配置',
+  cache: '本地缓存',
+  search_llm: 'AI 搜索分类',
+  search_rule_fallback: '规则推断',
+  local_heuristic: '本地启发式',
+}[key] || key);
+
+const pctRows = (bucket: Record<string, number> | undefined) => Object.entries(bucket || {})
+  .map(([key, pct]) => ({ key, label: labelOf(key), pct: Number(pct || 0) }))
+  .filter((item) => item.pct > 0)
+  .sort((a, b) => b.pct - a.pct);
 
 export default function App() {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [profile, setProfile] = useState<any>(null);
+  const [profileLoading, setProfileLoading] = useState(true);
+  const [profileRefreshing, setProfileRefreshing] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [aiData, setAiData] = useState<any>(null);
   const [analysisLogs, setAnalysisLogs] = useState<string[]>([]);
@@ -34,6 +105,7 @@ export default function App() {
 
   useEffect(() => {
     fetchHoldings();
+    fetchProfile(false);
   }, []);
 
   useEffect(() => {
@@ -56,6 +128,30 @@ export default function App() {
       console.error(err);
     }
     setLoading(false);
+  };
+
+  const fetchProfile = async (refreshClassification: boolean) => {
+    if (refreshClassification) {
+      setProfileRefreshing(true);
+    } else {
+      setProfileLoading(true);
+    }
+    setProfileError(null);
+    try {
+      const res = await fetch(`/api/profile?refresh_classification=${refreshClassification ? 'true' : 'false'}&_t=${Date.now()}`);
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(payload.detail || `HTTP ${res.status}`);
+      }
+      const json = await res.json();
+      setProfile(json);
+    } catch (err: any) {
+      console.error(err);
+      setProfileError(err.message || '组合画像生成失败');
+    } finally {
+      setProfileLoading(false);
+      setProfileRefreshing(false);
+    }
   };
 
   const fetchKlines = async (symbol: string) => {
@@ -135,8 +231,6 @@ export default function App() {
     }
     setAnalyzing(false);
   };
-
-  const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
 
   const etfHoldings = [...(data?.holdings?.filter((h: any) => h.asset_type === 'etf') || [])].sort((a, b) => {
     const valA = a[etfSortBy] || 0;
@@ -375,6 +469,38 @@ export default function App() {
                 </div>
               </div>
             </section>
+
+            {profileLoading ? (
+              <section className="bg-slate-900/50 border border-slate-800 rounded-3xl p-8 flex items-center gap-4">
+                <RefreshCw className="w-5 h-5 animate-spin text-indigo-400" />
+                <div>
+                  <h2 className="text-lg font-bold text-slate-100">正在生成组合画像</h2>
+                  <p className="text-sm text-slate-500">默认只读取已有分类配置和缓存，不会调用分类 LLM。</p>
+                </div>
+              </section>
+            ) : profileError ? (
+              <section className="bg-red-950/20 border border-red-500/30 rounded-3xl p-8 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="w-5 h-5 text-red-400 mt-1" />
+                  <div>
+                    <h2 className="text-lg font-bold text-red-200">组合画像生成失败</h2>
+                    <p className="text-sm text-red-200/70 mt-1">{profileError}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => fetchProfile(false)}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 px-4 py-2 text-sm font-bold text-red-100 transition-colors"
+                >
+                  <RefreshCw className="w-4 h-4" /> 重试
+                </button>
+              </section>
+            ) : profile ? (
+              <PortfolioProfilePanel 
+                profile={profile} 
+                refreshing={profileRefreshing}
+                onRefreshClassification={() => fetchProfile(true)}
+                onUpdateProfile={(newProfile) => setProfile(newProfile)}
+              />            ) : null}
 
             {/* AI Analysis Result Panel (only shows when aiData exists) */}
             {aiData && (
@@ -624,6 +750,317 @@ export default function App() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function PortfolioProfilePanel({ profile, refreshing, onRefreshClassification, onUpdateProfile }: { profile: any, refreshing: boolean, onRefreshClassification: () => void, onUpdateProfile: (newProfile: any) => void }) {
+  const [filter, setFilter] = useState<{ type: 'asset_class' | 'strategy' | 'sector', value: string } | null>(null);
+  const [refreshingCodes, setRefreshingCodes] = useState<Set<string>>(new Set());
+  
+  const summary = profile.summary || {};
+  const assetRows = pctRows(summary.by_asset_class);
+  const strategyRows = pctRows(summary.by_strategy);
+  const sectorRows = pctRows(summary.by_sector).slice(0, 10);
+  const topPositions = summary.top_positions || [];
+  const positions = summary.positions || [];
+  const filteredPositions = filter 
+    ? positions.filter((p: any) => p[filter.type] === filter.value)
+    : positions;
+
+  const observations = profile.observations || [];
+  const lowConfidence = Number(summary.low_confidence_classification_pct || 0);
+  const unknown = Number(summary.unknown_classification_pct || 0);
+
+  const handleSingleClassify = async (code: string) => {
+    setRefreshingCodes(prev => new Set(prev).add(code));
+    try {
+      const res = await fetch(`/api/classify/${code}`, { method: 'POST' });
+      if (!res.ok) throw new Error('分类失败');
+      const newCls = await res.json();
+      
+      // 更新本地 profile 状态
+      const updatedProfile = { ...profile };
+      if (updatedProfile.summary && updatedProfile.summary.positions) {
+        updatedProfile.summary.positions = updatedProfile.summary.positions.map((p: any) => 
+          p.code === code ? { 
+            ...p, 
+            asset_class: newCls.asset_class,
+            sector: newCls.sector,
+            theme: newCls.theme,
+            strategy: newCls.strategy,
+            classification_confidence: newCls.confidence,
+            classification_source: newCls.source
+          } : p
+        );
+        onUpdateProfile(updatedProfile);
+      }
+    } catch (err) {
+      console.error(err);
+      alert(`${code} 分类刷新失败`);
+    } finally {
+      setRefreshingCodes(prev => {
+        const next = new Set(prev);
+        next.delete(code);
+        return next;
+      });
+    }
+  };
+
+  return (
+    <section className="space-y-6">
+      <div className="flex flex-col xl:flex-row xl:items-end justify-between gap-5">
+        <div>
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 text-xs font-bold uppercase tracking-wider mb-3">
+            <Database className="w-3.5 h-3.5" /> Portfolio Profile
+          </div>
+          <h2 className="text-2xl md:text-3xl font-black text-slate-100">组合画像</h2>
+          <p className="text-sm text-slate-500 mt-2 max-w-2xl">
+            基于已同步持仓、手动分类和本地分类缓存生成。默认不触发搜索和 LLM；只有点击刷新分类画像才会补全低置信度或缺失分类。
+          </p>
+        </div>
+        <div className="flex flex-col sm:flex-row gap-3">
+          <button
+            onClick={onRefreshClassification}
+            disabled={refreshing}
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-cyan-500/10 hover:bg-cyan-500/20 disabled:opacity-60 border border-cyan-500/30 px-4 py-2.5 text-sm font-bold text-cyan-100 transition-colors"
+            title="允许触发搜索和分类 LLM，刷新缺失、过期或低置信度分类"
+          >
+            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+            {refreshing ? '正在刷新分类...' : '刷新分类画像'}
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+        <ProfileMetric icon={<Wallet className="w-5 h-5" />} label="画像总市值" value={formatMoney(summary.total_value)} tone="text-blue-300" />
+        <ProfileMetric icon={<Layers className="w-5 h-5" />} label="持仓数量" value={`${summary.position_count || 0} 个`} tone="text-emerald-300" />
+        <ProfileMetric icon={<AlertTriangle className="w-5 h-5" />} label="未知分类占比" value={formatPct(unknown)} tone={unknown > 0 ? 'text-amber-300' : 'text-slate-300'} />
+        <ProfileMetric icon={<CheckCircle2 className="w-5 h-5" />} label="低置信度占比" value={formatPct(lowConfidence)} tone={lowConfidence > 0 ? 'text-amber-300' : 'text-emerald-300'} />
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+        <div className="xl:col-span-7 grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <ProfileDistribution 
+            title="资产大类" 
+            rows={assetRows} 
+            onSelect={(val) => setFilter({ type: 'asset_class', value: val })}
+            activeValue={filter?.type === 'asset_class' ? filter.value : null}
+          />
+          <ProfileDistribution 
+            title="策略来源" 
+            rows={strategyRows} 
+            onSelect={(val) => setFilter({ type: 'strategy', value: val })}
+            activeValue={filter?.type === 'strategy' ? filter.value : null}
+          />
+        </div>
+
+        <div className="xl:col-span-5 bg-slate-900/50 border border-slate-800 rounded-2xl p-5">
+          <div className="flex items-center justify-between mb-5">
+            <h3 className="text-base font-bold text-slate-100">Top 持仓</h3>
+            <span className="text-xs text-slate-500">按市值排序</span>
+          </div>
+          <div className="space-y-4">
+            {topPositions.map((item: any) => (
+              <div key={item.code} className="space-y-2">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="font-bold text-slate-200 truncate">{item.name}</div>
+                    <div className="text-xs text-slate-500 font-mono">{item.code} · {labelOf(item.asset_class)} · {labelOf(item.strategy)}</div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="text-sm font-bold text-slate-100">{formatPct(item.weight)}</div>
+                    <div className="text-xs text-slate-500">{formatMoney(item.market_value)}</div>
+                  </div>
+                </div>
+                <div className="h-2 rounded-full bg-slate-800 overflow-hidden">
+                  <div className="h-full rounded-full bg-blue-400" style={{ width: `${Math.min(Number(item.weight || 0), 100)}%` }}></div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+        <div className="xl:col-span-5 bg-slate-900/50 border border-slate-800 rounded-2xl p-5">
+          <div className="flex items-center justify-between mb-5">
+            <h3 className="text-base font-bold text-slate-100">行业暴露</h3>
+            <span className="text-xs text-slate-500">点击分类可过滤下方列表</span>
+          </div>
+          <ProfileBarList 
+            rows={sectorRows} 
+            onSelect={(val) => setFilter({ type: 'sector', value: val })}
+            activeValue={filter?.type === 'sector' ? filter.value : null}
+          />
+        </div>
+
+        <div className="xl:col-span-7 bg-slate-900/50 border border-slate-800 rounded-2xl p-5">
+          <div className="flex items-center justify-between mb-5">
+            <h3 className="text-base font-bold text-slate-100">事实观察项</h3>
+            <span className="text-xs text-slate-500">{observations.length} 条</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {observations.map((item: any) => (
+              <div key={item.id} className="rounded-xl bg-slate-950/40 border border-slate-800 p-4">
+                <div className="text-sm font-bold text-slate-200">{item.label}</div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {(item.evidence || []).map((evidence: string) => (
+                    <span key={evidence} className="rounded-lg bg-slate-800/70 px-2 py-1 text-xs font-mono text-slate-400">{evidence}</span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-slate-900/50 border border-slate-800 rounded-2xl overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800">
+          <div className="flex items-center gap-4">
+            <h3 className="text-base font-bold text-slate-100">分类明细</h3>
+            {filter && (
+              <button 
+                onClick={() => setFilter(null)}
+                className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-indigo-500/20 text-indigo-300 text-xs border border-indigo-500/30 hover:bg-indigo-500/30 transition-colors"
+              >
+                <span>正在查看: {labelOf(filter.value)}</span>
+                <RotateCcw className="w-3 h-3" />
+                <span>清除过滤</span>
+              </button>
+            )}
+          </div>
+          <span className="text-xs text-slate-500">按市值排序，低置信度优先人工复核</span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-950/40 text-slate-500">
+              <tr>
+                <th className="text-left font-semibold px-5 py-3">标的</th>
+                <th className="text-left font-semibold px-5 py-3">资产大类</th>
+                <th className="text-left font-semibold px-5 py-3">行业/主题</th>
+                <th className="text-left font-semibold px-5 py-3">策略</th>
+                <th className="text-right font-semibold px-5 py-3">占比</th>
+                <th className="text-right font-semibold px-5 py-3">置信度</th>
+                <th className="text-left font-semibold px-5 py-3">来源</th>
+                <th className="text-center font-semibold px-5 py-3">操作</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/70">
+              {filteredPositions.map((item: any) => (
+                <tr key={item.code} className="hover:bg-slate-800/30 transition-colors">
+                  <td className="px-5 py-3">
+                    <div className="font-bold text-slate-200">{item.name}</div>
+                    <div className="text-xs text-slate-500 font-mono">{item.code}</div>
+                  </td>
+                  <td className="px-5 py-3 text-slate-300">{labelOf(item.asset_class)}</td>
+                  <td className="px-5 py-3 text-slate-400">{labelOf(item.sector)} / {labelOf(item.theme)}</td>
+                  <td className="px-5 py-3 text-slate-400">{labelOf(item.strategy)}</td>
+                  <td className="px-5 py-3 text-right font-mono text-slate-200">{formatPct(item.weight)}</td>
+                  <td className={`px-5 py-3 text-right font-mono ${Number(item.classification_confidence || 0) < 0.75 ? 'text-amber-300' : 'text-emerald-300'}`}>
+                    {Number(item.classification_confidence || 0).toFixed(2)}
+                  </td>
+                  <td className="px-5 py-3">
+                    <span className="rounded-lg bg-slate-800 px-2 py-1 text-xs text-slate-400">{labelOf(item.classification_source)}</span>
+                  </td>
+                  <td className="px-5 py-3 text-center">
+                    <button 
+                      onClick={() => handleSingleClassify(item.code)}
+                      disabled={refreshingCodes.has(item.code)}
+                      className="p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-cyan-400 hover:bg-slate-700 transition-all disabled:opacity-50"
+                      title="单独触发此标的的 AI 搜索与分类"
+                    >
+                      <RefreshCw className={`w-4 h-4 ${refreshingCodes.has(item.code) ? 'animate-spin' : ''}`} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ProfileMetric({ icon, label, value, tone }: { icon: ReactNode, label: string, value: string, tone: string }) {
+  return (
+    <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-5">
+      <div className={`mb-4 inline-flex rounded-xl bg-slate-800/70 p-2 ${tone}`}>{icon}</div>
+      <div className="text-xs font-bold uppercase tracking-wider text-slate-500">{label}</div>
+      <div className={`mt-1 text-2xl font-black ${tone}`}>{value}</div>
+    </div>
+  );
+}
+
+function ProfileDistribution({ title, rows, onSelect, activeValue }: { title: string, rows: Array<{ key: string, label: string, pct: number }>, onSelect: (val: string) => void, activeValue?: string | null }) {
+  return (
+    <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-5">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-base font-bold text-slate-100">{title}</h3>
+        <span className="text-xs text-slate-500">{rows.length} 项</span>
+      </div>
+      <div className="h-48">
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie 
+              data={rows} 
+              dataKey="pct" 
+              nameKey="label" 
+              cx="50%" cy="50%" 
+              innerRadius={48} outerRadius={78} 
+              stroke="none" paddingAngle={2}
+              onClick={(data) => {
+                if (data && data.payload && data.payload.key) {
+                  onSelect(data.payload.key);
+                }
+              }}
+              className="cursor-pointer"
+            >
+              {rows.map((row, index) => (
+                <Cell 
+                  key={`profile-cell-${index}`} 
+                  fill={activeValue && activeValue !== row.key ? '#334155' : COLORS[index % COLORS.length]} 
+                  className="transition-all duration-300"
+                />
+              ))}
+            </Pie>
+            <Tooltip
+              contentStyle={{ backgroundColor: 'rgba(15, 23, 42, 0.95)', border: '1px solid rgba(51, 65, 85, 0.8)', borderRadius: '12px', color: '#fff' }}
+              formatter={(value, name) => [formatPct(value), String(name)]}
+            />
+          </PieChart>
+        </ResponsiveContainer>
+      </div>
+      <ProfileBarList rows={rows.slice(0, 5)} onSelect={onSelect} activeValue={activeValue} />
+    </div>
+  );
+}
+
+function ProfileBarList({ rows, onSelect, activeValue }: { rows: Array<{ key: string, label: string, pct: number }>, onSelect?: (val: string) => void, activeValue?: string | null }) {
+  if (!rows.length) {
+    return <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-4 text-sm text-slate-500">暂无可展示数据</div>;
+  }
+  return (
+    <div className="space-y-3">
+      {rows.map((row, index) => (
+        <div 
+          key={row.key} 
+          className={`space-y-1.5 transition-all duration-200 ${onSelect ? 'cursor-pointer hover:bg-slate-800/30 rounded-lg p-1 -m-1' : ''} ${activeValue === row.key ? 'bg-indigo-500/10 -m-1 p-1 rounded-lg border border-indigo-500/20' : ''}`}
+          onClick={() => onSelect?.(row.key)}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: activeValue && activeValue !== row.key ? '#334155' : COLORS[index % COLORS.length] }}></span>
+              <span className={`text-sm truncate ${activeValue === row.key ? 'text-indigo-300 font-bold' : 'text-slate-300'}`}>{row.label}</span>
+            </div>
+            <span className="text-xs font-mono text-slate-400">{formatPct(row.pct)}</span>
+          </div>
+          <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
+            <div className="h-full rounded-full transition-all duration-500" style={{ width: `${Math.min(row.pct, 100)}%`, backgroundColor: activeValue && activeValue !== row.key ? '#334155' : COLORS[index % COLORS.length] }}></div>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

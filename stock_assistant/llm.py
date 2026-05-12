@@ -124,7 +124,18 @@ def call_llm(messages: list[dict[str, str]], config: dict[str, Any], model_overr
     llm = config["llm"]
     base_url = str(llm["base_url"]).rstrip("/")
     model = model_override or llm["model"]
-    log(f"正在调用 LLM: {base_url} (model={model})")
+    context = str(llm.get("log_context", "")).strip()
+    context_suffix = f" context={context}" if context else ""
+    timeout = llm.get("timeout_seconds", 120)
+    log(f"正在调用 LLM: {base_url} (model={model}){context_suffix} timeout={timeout}s")
+    
+    # 记录发送给 LLM 的 Payload (Prompt 内容)
+    try:
+        payload_str = json.dumps(messages, ensure_ascii=False, indent=2)
+        log(f"LLM Request Payload:\n{payload_str}", name="llm_payload")
+    except Exception as e:
+        log(f"无法记录 LLM Payload: {e}", level="WARN")
+
     api_key = llm_api_key(llm)
     
     if not api_key and (base_url.startswith("https://api-inference.modelscope.cn") or base_url.startswith("https://easyrouter.io")):
