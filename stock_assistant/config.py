@@ -148,7 +148,9 @@ DEFAULTS: dict[str, Any] = {
         "disable_thinking": False,
         "reasoning_effort": "",
         "structured_output": "auto",
+        "supports_response_format": False,
         "repair_attempts": 1,
+        "max_context_positions": 50,
     },
 }
 

@@ -30,7 +30,12 @@ def llm_api_key(llm: dict[str, Any]) -> str:
         return inline_key
     return ""
 
-def openai_client_llm(messages: list[dict[str, str]], config: dict[str, Any], api_key: str) -> str:
+def openai_client_llm(
+    messages: list[dict[str, str]],
+    config: dict[str, Any],
+    api_key: str,
+    request_kwargs: dict[str, Any] | None = None,
+) -> str:
     llm = config["llm"]
     base_url = str(llm["base_url"]).rstrip("/")
     try:
@@ -48,6 +53,8 @@ def openai_client_llm(messages: list[dict[str, str]], config: dict[str, Any], ap
     reasoning_effort = str(llm.get("reasoning_effort", "")).strip()
     if reasoning_effort:
         kwargs["reasoning_effort"] = reasoning_effort
+    if request_kwargs:
+        kwargs.update(request_kwargs)
     if config_bool(llm.get("stream", False)):
         answer_parts: list[str] = []
         reasoning_seen = False
@@ -79,7 +86,12 @@ def openai_client_llm(messages: list[dict[str, str]], config: dict[str, Any], ap
         raise RuntimeError("LLM 只返回了 reasoning_content，正文 content 为空。")
     raise RuntimeError("LLM 返回为空。")
 
-def urllib_llm(messages: list[dict[str, str]], config: dict[str, Any], api_key: str) -> str:
+def urllib_llm(
+    messages: list[dict[str, str]],
+    config: dict[str, Any],
+    api_key: str,
+    request_kwargs: dict[str, Any] | None = None,
+) -> str:
     llm = config["llm"]
     base_url = str(llm["base_url"]).rstrip("/")
     disable_thinking = config_bool(llm.get("disable_thinking", False))
@@ -95,6 +107,8 @@ def urllib_llm(messages: list[dict[str, str]], config: dict[str, Any], api_key: 
     reasoning_effort = str(llm.get("reasoning_effort", "")).strip()
     if reasoning_effort:
         body["reasoning_effort"] = reasoning_effort
+    if request_kwargs:
+        body.update(request_kwargs)
     if disable_thinking and ("localhost" in base_url or "127.0.0.1" in base_url or "10." in base_url):
         body["enable_thinking"] = False
         body["chat_template_kwargs"] = {"enable_thinking": False}
@@ -120,7 +134,12 @@ def urllib_llm(messages: list[dict[str, str]], config: dict[str, Any], api_key: 
         raise RuntimeError("LLM 只返回了 reasoning_content，正文 content 为空；需要继续增大 max_tokens 或在 LM Studio 里关闭 reasoning 输出。")
     raise RuntimeError(f"LLM 返回为空: {json.dumps(payload, ensure_ascii=False)[:1000]}")
 
-def call_llm(messages: list[dict[str, str]], config: dict[str, Any], model_override: str | None = None) -> str:
+def call_llm(
+    messages: list[dict[str, str]],
+    config: dict[str, Any],
+    model_override: str | None = None,
+    request_kwargs: dict[str, Any] | None = None,
+) -> str:
     llm = config["llm"]
     base_url = str(llm["base_url"]).rstrip("/")
     model = model_override or llm["model"]
@@ -147,8 +166,8 @@ def call_llm(messages: list[dict[str, str]], config: dict[str, Any], model_overr
     actual_config["llm"]["model"] = model
     
     if str(llm.get("client", "openai")).strip().lower() == "openai":
-        return openai_client_llm(messages, actual_config, api_key)
-    return urllib_llm(messages, actual_config, api_key)
+        return openai_client_llm(messages, actual_config, api_key, request_kwargs=request_kwargs)
+    return urllib_llm(messages, actual_config, api_key, request_kwargs=request_kwargs)
 
 def generate_structured_llm_commentary(
     results: list[dict[str, Any]], 

@@ -1,4 +1,6 @@
 from .analysis import analyze_holdings, analyze_one, decide_action
+from .agent import run_agent_analysis, run_agent_analysis_events
+from .agent_llm import build_agent_llm_context, generate_agent_report_with_llm, parse_agent_report, fallback_agent_report, llm_structured_kwargs
 from .classification import classification_from_config, classify_holding, load_cached_classification, save_classification_cache, classification_cache_is_fresh, classification_cache_status
 from .cli import run
 from .config import DEFAULTS, DEFAULT_CONFIG, ensure_dirs, load_config
@@ -10,6 +12,8 @@ from .memory import (
     diff_agent_snapshots,
     build_agent_snapshot,
     list_agent_snapshots,
+    agent_snapshot_fingerprint,
+    agent_snapshots_have_same_facts,
 )
 from .models import Bar, Holding, InstrumentClassification, RiskFlag, CandidateAction, analysis_result_to_dict, holding_to_dict, bar_to_dict
 from .portfolio import generate_portfolio_observations, summarize_portfolio, value_map_to_pct
@@ -28,6 +32,9 @@ __all__ = [
     "archive_holding_file", "open_ledger_and_download",
     "fetch_bars", "analyze_holdings", "analyze_one", "decide_action",
     "llm_enabled", "generate_structured_llm_commentary", "generate_llm_commentary",
+    "build_agent_llm_context", "generate_agent_report_with_llm", "parse_agent_report", "fallback_agent_report", "llm_structured_kwargs",
+    "run_agent_analysis", "run_agent_analysis_events",
+    "agent_snapshot_fingerprint", "agent_snapshots_have_same_facts",
     "classification_from_config", "classify_holding", "load_cached_classification", "save_classification_cache", "classification_cache_is_fresh", "classification_cache_status",
     "build_search_provider", "suggest_classification_with_search", "TavilySearchProvider", "BraveSearchProvider", "score_classification_evidence",
     "report_markdown", "write_report", "run"

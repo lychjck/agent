@@ -145,4 +145,6 @@ stream = true
 disable_thinking = false
 reasoning_effort = ""
 structured_output = "auto"
+supports_response_format = false
 repair_attempts = 1
+max_context_positions = 50
