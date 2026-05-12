@@ -733,6 +733,7 @@ export default function App() {
                         key={`etf-${i}`} 
                         holding={h} 
                         isActive={selectedSymbol === h.code}
+                        aiAction={aiData?.action_items?.find((a: any) => a.target === h.name || a.target === h.code)}
                         onSelect={() => setSelectedSymbol(h.code)}
                       />
                     ))}
@@ -775,6 +776,7 @@ export default function App() {
                         holding={h} 
                         isFund={true} 
                         isActive={selectedSymbol === h.code}
+                        aiAction={aiData?.action_items?.find((a: any) => a.target === h.name || a.target === h.code)}
                         onSelect={() => setSelectedSymbol(h.code)}
                       />
                     ))}
@@ -1114,7 +1116,7 @@ function ProfileBarList({ rows, onSelect, activeValue }: { rows: Array<{ key: st
 }
 
 // Sub-component for individual asset cards
-function HoldingCard({ holding, isFund = false, isActive = false, onSelect }: { holding: any, isFund?: boolean, isActive?: boolean, onSelect: () => void }) {
+function HoldingCard({ holding, isFund = false, isActive = false, aiAction, onSelect }: { holding: any, isFund?: boolean, isActive?: boolean, aiAction?: any, onSelect: () => void }) {
   const isProfit = holding.profit_pct >= 0;
   
   return (
@@ -1162,22 +1164,43 @@ function HoldingCard({ holding, isFund = false, isActive = false, onSelect }: { 
         </div>
       </div>
       
-      <div className="pt-4 border-t border-slate-800">
-        <div className="flex items-start gap-2">
-          {isFund ? (
-            <Landmark className="w-4 h-4 mt-0.5 text-slate-500 shrink-0"/>
-          ) : (
-            <Activity className="w-4 h-4 mt-0.5 text-indigo-400 shrink-0"/>
-          )}
-          <div>
-            <span className={`text-xs font-medium px-2 py-0.5 rounded mr-2 ${isFund ? 'bg-slate-800 text-slate-400' : 'bg-indigo-500/10 text-indigo-300'}`}>
-              {holding.action || '数据不足'}
-            </span>
-            <p className="text-xs text-slate-400 line-clamp-2 mt-1 leading-relaxed" title={holding.reason}>
-              {holding.reason || '暂无系统分析建议'}
-            </p>
+      <div className="pt-4 border-t border-slate-800 space-y-3">
+        {/* Rule Engine Suggestion */}
+        {(!aiAction || holding.action) && (
+          <div className="flex items-start gap-2">
+            {isFund ? (
+              <Landmark className="w-4 h-4 mt-0.5 text-slate-500 shrink-0"/>
+            ) : (
+              <Activity className="w-4 h-4 mt-0.5 text-slate-500 shrink-0"/>
+            )}
+            <div>
+              <span className={`text-xs font-medium px-2 py-0.5 rounded mr-2 ${isFund ? 'bg-slate-800 text-slate-400' : 'bg-slate-800 text-slate-400'}`}>
+                {holding.action || '常规持有'}
+              </span>
+              <p className="text-xs text-slate-500 line-clamp-1 mt-1 leading-relaxed" title={holding.reason}>
+                {holding.reason || '当前暂无特殊技术面信号'}
+              </p>
+            </div>
           </div>
-        </div>
+        )}
+
+        {/* AI Action Suggestion */}
+        {aiAction && (
+          <div className={`flex items-start gap-2 ${(!aiAction || holding.action) ? 'pt-2 border-t border-slate-800/50' : ''}`}>
+            <Cpu className="w-4 h-4 mt-0.5 text-indigo-400 shrink-0"/>
+            <div>
+              <span className={`text-xs font-bold px-2 py-0.5 rounded mr-2 uppercase tracking-wider ${
+                aiAction.type === 'reduce' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 
+                aiAction.type === 'buy' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+              }`}>
+                {aiAction.type === 'reduce' ? 'AI 建议减仓' : aiAction.type === 'buy' ? 'AI 建议加仓' : 'AI 建议观望'}
+              </span>
+              <p className="text-xs text-indigo-200/80 line-clamp-2 mt-1 leading-relaxed" title={aiAction.reason}>
+                {aiAction.reason}
+              </p>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

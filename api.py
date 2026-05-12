@@ -213,10 +213,66 @@ async def analyze_portfolio(req: AnalyzeRequest = AnalyzeRequest()):
                 yield f"data: {json.dumps({'error': '当前仅支持 tzzb_api 模式。'})}\n\n"
 
             if results:
-                msg = f"正在请求大模型进行深度诊断 ({current_model})..."
+                msg = f"正在准备历史快照上下文并请求深度诊断 ({current_model})..."
                 log(msg)
                 yield f"data: {json.dumps({'status': msg, 'step': 3})}\n\n"
-                commentary = generate_structured_llm_commentary(results, config, model_override=req.model)
+                
+                # --- Task 8 Memory Integration ---
+                snapshot_diff = None
+                snapshot_to_save = None
+                try:
+                    from stock_assistant.cli import profile_classification_for_holding
+                    from stock_assistant.portfolio import summarize_portfolio, generate_portfolio_observations
+                    from stock_assistant.memory import load_latest_agent_snapshot, diff_agent_snapshots, build_agent_snapshot, save_agent_snapshot
+                    from stock_assistant.models import Holding
+                    
+                    _holdings = []
+                    if not req.cached_results and 'holdings' in locals():
+                        _holdings = holdings
+                    else:
+                        valid_keys = {"code", "name", "quantity", "cost_price", "market_value", "profit_pct", "hold_profit", "day_profit", "asset_type"}
+                        for res in results:
+                            h_data = res.get("holding", {})
+                            h_kwargs = {k: v for k, v in h_data.items() if k in valid_keys}
+                            if "code" in h_kwargs and "name" in h_kwargs:
+                                _holdings.append(Holding(**h_kwargs))
+                                
+                    classifications = {
+                        h.code: profile_classification_for_holding(h, config, False)
+                        for h in _holdings
+                    }
+                    portfolio_summary = summarize_portfolio(_holdings, classifications, config)
+                    observations = generate_portfolio_observations(portfolio_summary)
+                    risk_flags = []
+                    candidate_actions = []
+                    
+                    previous_snapshot = load_latest_agent_snapshot(config)
+                    current_state = {
+                        "portfolio": portfolio_summary,
+                        "risk_flags": risk_flags,
+                        "candidate_actions": candidate_actions
+                    }
+                    snapshot_diff = diff_agent_snapshots(previous_snapshot, current_state)
+                    
+                    snapshot_to_save = {
+                        "source": "tzzb_api",
+                        "ledger_summary": summary if 'summary' in locals() else {},
+                        "holdings": _holdings,
+                        "classifications": classifications,
+                        "technical_results": results,
+                        "summary": portfolio_summary,
+                        "observations": observations,
+                        "risk_flags": risk_flags,
+                        "candidate_actions": candidate_actions,
+                        "model": current_model,
+                    }
+                except Exception as mem_err:
+                    log(f"构建快照上下文失败: {mem_err}", level="ERROR")
+                # ---------------------------------
+                
+                commentary = generate_structured_llm_commentary(
+                    results, config, model_override=req.model, snapshot_diff=snapshot_diff
+                )
                 
                 result_data = None
                 if isinstance(commentary, str):
@@ -232,6 +288,17 @@ async def analyze_portfolio(req: AnalyzeRequest = AnalyzeRequest()):
                 log("诊断报告生成完毕！")
                 yield f"data: {json.dumps({'status': '诊断报告生成完毕！', 'step': 4, 'result': result_data})}\n\n"
                 
+                if snapshot_to_save and result_data:
+                    try:
+                        snapshot = build_agent_snapshot(
+                            agent_report=result_data,
+                            **snapshot_to_save
+                        )
+                        if str(config.get("agent", {}).get("save_snapshots", "true")).lower() in {"true", "1", "yes"}:
+                            save_agent_snapshot(snapshot, config)
+                    except Exception as e:
+                        log(f"保存快照失败: {e}", level="ERROR")
+                        
                 # 自动保存报告到本地
                 try:
                     report_dir = Path(config.get("paths", {}).get("report_dir", "reports")).expanduser()

@@ -150,7 +150,12 @@ def call_llm(messages: list[dict[str, str]], config: dict[str, Any], model_overr
         return openai_client_llm(messages, actual_config, api_key)
     return urllib_llm(messages, actual_config, api_key)
 
-def generate_structured_llm_commentary(results: list[dict[str, Any]], config: dict[str, Any], model_override: str | None = None) -> str | None:
+def generate_structured_llm_commentary(
+    results: list[dict[str, Any]], 
+    config: dict[str, Any], 
+    model_override: str | None = None,
+    snapshot_diff: dict[str, Any] | None = None,
+) -> str | None:
     if not llm_enabled(config):
         return None
     log(f"准备 LLM 诊断数据，标的数量: {len(results)}")
@@ -168,6 +173,8 @@ def generate_structured_llm_commentary(results: list[dict[str, Any]], config: di
         },
         "holdings": [compact_result_for_llm(item) for item in results],
     }
+    if snapshot_diff:
+        payload["history_diff"] = snapshot_diff
     
     json_schema = '''{
   "summary": {
