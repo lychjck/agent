@@ -2,17 +2,15 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import glob
 from pathlib import Path
 import json
 import httpx
-import datetime as dt
 
 from stock_assistant import (
     load_config, load_env_file, ensure_dirs, fetch_tzzb_holdings,
-    analyze_holdings, llm_enabled, generate_structured_llm_commentary, log,
-    fetch_bars, analyze_one, holding_to_dict, analysis_result_to_dict
+    llm_enabled, log, holding_to_dict, load_latest_agent_snapshot, list_agent_snapshots
 )
+from stock_assistant.agent import run_agent_analysis, run_agent_analysis_events
 from stock_assistant.cli import build_portfolio_profile
 from stock_assistant.utils import setup_basic_logging
 
@@ -35,6 +33,10 @@ config = load_config(CONFIG_PATH)
 ensure_dirs(config)
 
 class AnalyzeRequest(BaseModel):
+    cached_results: list[dict] | None = None
+    model: str | None = None
+
+class AgentRunRequest(BaseModel):
     cached_results: list[dict] | None = None
     model: str | None = None
 
@@ -154,6 +156,72 @@ async def get_daily_klines(symbol: str):
             log(f"获取日线失败: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to fetch daily klines: {str(e)}")
 
+def sse_payload(payload: dict) -> str:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+LEGACY_STEP_MAP = {
+    "sync_holdings": 1,
+    "classify": 2,
+    "market_data": 2,
+    "technical_analysis": 2,
+    "portfolio_profile": 3,
+    "portfolio_observations": 3,
+    "llm_report": 3,
+    "save_snapshot": 4,
+    "done": 4,
+}
+
+@app.post("/api/agent/run/stream")
+async def run_agent_stream(req: AgentRunRequest = AgentRunRequest()):
+    async def event_generator():
+        try:
+            async for event in run_agent_analysis_events(
+                config,
+                cached_results=req.cached_results,
+                model_override=req.model,
+            ):
+                yield sse_payload(event)
+        except Exception as e:  # noqa: BLE001
+            log(f"agent stream 失败: {e}", level="ERROR", name="api")
+            yield sse_payload({"step": "error", "error": str(e)})
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@app.post("/api/agent/run")
+async def run_agent(req: AgentRunRequest = AgentRunRequest()):
+    try:
+        return await run_agent_analysis(
+            config,
+            cached_results=req.cached_results,
+            model_override=req.model,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+@app.get("/api/agent/latest")
+def get_latest_agent_snapshot():
+    snapshot = load_latest_agent_snapshot(config)
+    return {"snapshot": snapshot}
+
+@app.get("/api/agent/history")
+def get_agent_history():
+    history = []
+    for path in reversed(list_agent_snapshots(config)):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as e:  # noqa: BLE001
+            history.append({"path": str(path), "error": str(e)})
+            continue
+        history.append({
+            "path": str(path),
+            "generated_at": payload.get("generated_at"),
+            "source": payload.get("source"),
+            "model": payload.get("model"),
+            "total_value": payload.get("portfolio", {}).get("total_value"),
+            "position_count": payload.get("portfolio", {}).get("position_count"),
+        })
+    return {"history": history}
+
 @app.post("/api/analyze")
 async def analyze_portfolio(req: AnalyzeRequest = AnalyzeRequest()):
     if not llm_enabled(config):
@@ -161,163 +229,23 @@ async def analyze_portfolio(req: AnalyzeRequest = AnalyzeRequest()):
     
     async def event_generator():
         try:
-            results = []
-            current_model = req.model or config.get("llm", {}).get("model", "unknown")
-            
-            if req.cached_results:
-                msg = f"检测到已有的技术分析数据，跳过行情拉取，直接进入 AI 诊断 (模型: {current_model})..."
-                log(msg)
-                yield f"data: {json.dumps({'status': msg, 'step': 3})}\n\n"
-                results = req.cached_results
-            elif str(config.get("ledger", {}).get("mode", "")).strip().lower() == "tzzb_api":
-                log("正在连接投资账本并同步持仓数据...")
-                yield f"data: {json.dumps({'status': '正在连接投资账本并同步持仓数据...', 'step': 1})}\n\n"
-                holdings, _, summary = fetch_tzzb_holdings(config)
-                
-                log(f"已获取 {len(holdings)} 个标的，开始拉取行情并进行技术面分析...")
-                yield f"data: {json.dumps({'status': f'已获取 {len(holdings)} 个标的，开始拉取行情并进行技术面分析...', 'step': 2})}\n\n"
-                
-                total_value = sum(item.market_value or 0 for item in holdings) or None
-                for i, holding in enumerate(holdings):
-                    if holding.asset_type == "fund":
-                        res = {
-                            "holding": holding_to_dict(holding), 
-                            "ok": True, "action": "持有场外基金", "reason": "场外基金，不参与K线分析",
-                            "profit_pct": holding.profit_pct, "current_value": holding.market_value,
-                            "weight": holding.market_value / total_value * 100 if holding.market_value and total_value else None
-                        }
-                        results.append(res)
-                        continue
-                    
-                    try:
-                        msg = f"[{i+1}/{len(holdings)}] 正在拉取 {holding.name} ({holding.code}) 的行情数据..."
-                        log(msg)
-                        yield f"data: {json.dumps({'status': msg, 'step': 2})}\n\n"
-                        bars = fetch_bars(holding.code, config)
-                        analysis_res = analyze_one(holding, bars, config, total_value)
-                        
-                        serializable_res = analysis_result_to_dict(analysis_res)
-                        results.append(serializable_res)
-                    except Exception as e:
-                        log(f"分析 {holding.code} 失败: {e}")
-                        results.append({
-                            "holding": holding_to_dict(holding), 
-                            "ok": False, "action": "行情失败", "reason": str(e)
-                        })
-                
-                # 发送中间结果
-                log("技术分析完成，已暂存中间数据。")
-                yield f"data: {json.dumps({'status': '技术分析完成，已暂存中间数据。', 'step': 2, 'technical_results': results})}\n\n"
-            else:
-                log("错误: 当前仅支持 tzzb_api 模式。")
-                yield f"data: {json.dumps({'error': '当前仅支持 tzzb_api 模式。'})}\n\n"
-
-            if results:
-                msg = f"正在准备历史快照上下文并请求深度诊断 ({current_model})..."
-                log(msg)
-                yield f"data: {json.dumps({'status': msg, 'step': 3})}\n\n"
-                
-                # --- Task 8 Memory Integration ---
-                snapshot_diff = None
-                snapshot_to_save = None
-                try:
-                    from stock_assistant.cli import profile_classification_for_holding
-                    from stock_assistant.portfolio import summarize_portfolio, generate_portfolio_observations
-                    from stock_assistant.memory import load_latest_agent_snapshot, diff_agent_snapshots, build_agent_snapshot, save_agent_snapshot
-                    from stock_assistant.models import Holding
-                    
-                    _holdings = []
-                    if not req.cached_results and 'holdings' in locals():
-                        _holdings = holdings
-                    else:
-                        valid_keys = {"code", "name", "quantity", "cost_price", "market_value", "profit_pct", "hold_profit", "day_profit", "asset_type"}
-                        for res in results:
-                            h_data = res.get("holding", {})
-                            h_kwargs = {k: v for k, v in h_data.items() if k in valid_keys}
-                            if "code" in h_kwargs and "name" in h_kwargs:
-                                _holdings.append(Holding(**h_kwargs))
-                                
-                    classifications = {
-                        h.code: profile_classification_for_holding(h, config, False)
-                        for h in _holdings
-                    }
-                    portfolio_summary = summarize_portfolio(_holdings, classifications, config)
-                    observations = generate_portfolio_observations(portfolio_summary)
-                    risk_flags = []
-                    candidate_actions = []
-                    
-                    previous_snapshot = load_latest_agent_snapshot(config)
-                    current_state = {
-                        "portfolio": portfolio_summary,
-                        "risk_flags": risk_flags,
-                        "candidate_actions": candidate_actions
-                    }
-                    snapshot_diff = diff_agent_snapshots(previous_snapshot, current_state)
-                    
-                    snapshot_to_save = {
-                        "source": "tzzb_api",
-                        "ledger_summary": summary if 'summary' in locals() else {},
-                        "holdings": _holdings,
-                        "classifications": classifications,
-                        "technical_results": results,
-                        "summary": portfolio_summary,
-                        "observations": observations,
-                        "risk_flags": risk_flags,
-                        "candidate_actions": candidate_actions,
-                        "model": current_model,
-                    }
-                except Exception as mem_err:
-                    log(f"构建快照上下文失败: {mem_err}", level="ERROR")
-                # ---------------------------------
-                
-                commentary = generate_structured_llm_commentary(
-                    results, config, model_override=req.model, snapshot_diff=snapshot_diff
-                )
-                
-                result_data = None
-                if isinstance(commentary, str):
-                    clean_json = commentary.strip()
-                    if clean_json.startswith("```json"):
-                        clean_json = clean_json[7:-3].strip()
-                    elif clean_json.startswith("```"):
-                        clean_json = clean_json[3:-3].strip()
-                    result_data = json.loads(clean_json)
-                else:
-                    result_data = commentary
-                
-                log("诊断报告生成完毕！")
-                yield f"data: {json.dumps({'status': '诊断报告生成完毕！', 'step': 4, 'result': result_data})}\n\n"
-                
-                if snapshot_to_save and result_data:
-                    try:
-                        snapshot = build_agent_snapshot(
-                            agent_report=result_data,
-                            **snapshot_to_save
-                        )
-                        if str(config.get("agent", {}).get("save_snapshots", "true")).lower() in {"true", "1", "yes"}:
-                            save_agent_snapshot(snapshot, config)
-                    except Exception as e:
-                        log(f"保存快照失败: {e}", level="ERROR")
-                        
-                # 自动保存报告到本地
-                try:
-                    report_dir = Path(config.get("paths", {}).get("report_dir", "reports")).expanduser()
-                    report_dir.mkdir(parents=True, exist_ok=True)
-                    timestamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-                    filename = f"ai-report-{timestamp}.json"
-                    report_path = report_dir / filename
-                    with open(report_path, "w", encoding="utf-8") as f:
-                        json.dump({
-                            "model": current_model,
-                            "results": results,
-                            "ai_response": result_data
-                        }, f, ensure_ascii=False, indent=2)
-                    log(f"AI 诊断报告已保存至: {report_path}")
-                except Exception as save_err:
-                    log(f"保存报告失败: {save_err}")
-        except Exception as e:
-            log(f"分析失败: {e}")
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            async for event in run_agent_analysis_events(
+                config,
+                cached_results=req.cached_results,
+                model_override=req.model,
+            ):
+                payload = {
+                    "status": event.get("status", ""),
+                    "step": LEGACY_STEP_MAP.get(str(event.get("step")), 3),
+                }
+                if "technical_results" in event:
+                    payload["technical_results"] = event["technical_results"]
+                if event.get("step") == "done":
+                    payload["result"] = event.get("snapshot", {}).get("agent_report")
+                yield sse_payload(payload)
+        except Exception as e:  # noqa: BLE001
+            log(f"分析失败: {e}", level="ERROR", name="api")
+            yield sse_payload({"error": str(e)})
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

@@ -1,11 +1,21 @@
 import dataclasses
 import datetime as dt
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
 from .models import Holding, RiskFlag, CandidateAction
 from .utils import log
+
+SNAPSHOT_FACT_FIELDS = (
+    "ledger_summary",
+    "portfolio",
+    "classifications",
+    "technical_results",
+    "risk_flags",
+    "candidate_actions",
+)
 
 def agent_snapshot_dir(config: dict[str, Any]) -> Path:
     path = Path(config.get("agent", {}).get("snapshot_dir", "data/state")).expanduser()
@@ -45,6 +55,45 @@ def load_latest_agent_snapshot(config: dict[str, Any]) -> dict[str, Any] | None:
     except Exception as e:
         log(f"无法读取最新的 agent 快照 {latest_path}: {e}", level="WARN")
         return None
+
+def stable_snapshot_value(value: Any) -> Any:
+    if dataclasses.is_dataclass(value):
+        return stable_snapshot_value(dataclasses.asdict(value))
+    if isinstance(value, dict):
+        return {
+            str(key): stable_snapshot_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            if key not in {"generated_at", "agent_report", "model"}
+        }
+    if isinstance(value, list | tuple):
+        return [stable_snapshot_value(item) for item in value]
+    if isinstance(value, float):
+        return round(value, 6)
+    return value
+
+def agent_snapshot_facts(snapshot: dict[str, Any], fields: tuple[str, ...] | None = None) -> dict[str, Any]:
+    selected_fields = fields or SNAPSHOT_FACT_FIELDS
+    return {
+        field: stable_snapshot_value(snapshot.get(field))
+        for field in selected_fields
+        if field in snapshot
+    }
+
+def agent_snapshot_fingerprint(snapshot: dict[str, Any], fields: tuple[str, ...] | None = None) -> str:
+    payload = json.dumps(agent_snapshot_facts(snapshot, fields), ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+def agent_snapshots_have_same_facts(
+    previous: dict[str, Any] | None,
+    current: dict[str, Any] | None,
+    fields: tuple[str, ...] | None = None,
+) -> bool:
+    if not previous or not current:
+        return False
+    compare_fields = fields or tuple(field for field in SNAPSHOT_FACT_FIELDS if field in current)
+    if not compare_fields:
+        return False
+    return agent_snapshot_fingerprint(previous, compare_fields) == agent_snapshot_fingerprint(current, compare_fields)
 
 def risk_flag_id(kind: str, scope: str, target: str) -> str:
     return f"risk:{kind}:{scope}:{target}"
@@ -88,9 +137,15 @@ def diff_agent_snapshots(previous: dict[str, Any] | None, current: dict[str, Any
         "portfolio_changes": {},
         "risk_changes": {"new": [], "resolved": [], "continued": [], "worsened": [], "improved": []},
         "action_changes": {"new": [], "resolved": [], "continued": []},
-        "classification_changes": {"new_known": [], "now_unknown": []}
+        "classification_changes": {"new_known": [], "now_unknown": []},
+        "duplicate_of_latest": False,
     }
     if previous is None:
+        return diff
+
+    if agent_snapshots_have_same_facts(previous, current):
+        diff["duplicate_of_latest"] = True
+        diff["portfolio_changes"] = {"unchanged": True}
         return diff
     
     # 比较总资产变化

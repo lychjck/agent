@@ -65,6 +65,24 @@ const labelOf = (key: string) => ({
   local_heuristic: '本地启发式',
 }[key] || key);
 
+const aiActionTone = (type: string) => {
+  if (type === 'reduce') return 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
+  if (type === 'buy') return 'bg-red-500/10 text-red-400 border border-red-500/20';
+  if (type === 'rebalance') return 'bg-blue-500/10 text-blue-400 border border-blue-500/20';
+  if (type === 'classify_required') return 'bg-slate-500/10 text-slate-300 border border-slate-500/20';
+  if (type === 'hold') return 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20';
+  return 'bg-amber-500/10 text-amber-400 border border-amber-500/20';
+};
+
+const aiActionLabel = (type: string, prefix = '') => ({
+  reduce: `${prefix}减仓/暂停加仓`,
+  buy: `${prefix}分批加仓`,
+  rebalance: `${prefix}再平衡`,
+  classify_required: `${prefix}需确认分类`,
+  hold: `${prefix}继续持有`,
+  watch: `${prefix}观察`,
+}[type] || `${prefix}观察`);
+
 const pctRows = (bucket: Record<string, number> | undefined) => Object.entries(bucket || {})
   .map(([key, pct]) => ({ key, label: labelOf(key), pct: Number(pct || 0) }))
   .filter((item) => item.pct > 0)
@@ -592,10 +610,9 @@ export default function App() {
                             <div className="flex justify-between items-start">
                               <span className="font-bold text-lg text-slate-100 group-hover:text-indigo-300 transition-colors">{action.target}</span>
                               <span className={`text-xs px-3 py-1 rounded-full font-bold uppercase tracking-wider ${
-                                action.type === 'reduce' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 
-                                action.type === 'buy' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                                aiActionTone(action.type)
                               }`}>
-                                {action.type === 'reduce' ? '减仓' : action.type === 'buy' ? '加仓' : '观望'}
+                                {aiActionLabel(action.type)}
                               </span>
                             </div>
                             <p className="text-sm text-slate-400 leading-relaxed">{action.reason}</p>
@@ -1190,10 +1207,9 @@ function HoldingCard({ holding, isFund = false, isActive = false, aiAction, onSe
             <Cpu className="w-4 h-4 mt-0.5 text-indigo-400 shrink-0"/>
             <div>
               <span className={`text-xs font-bold px-2 py-0.5 rounded mr-2 uppercase tracking-wider ${
-                aiAction.type === 'reduce' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 
-                aiAction.type === 'buy' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                aiActionTone(aiAction.type)
               }`}>
-                {aiAction.type === 'reduce' ? 'AI 建议减仓' : aiAction.type === 'buy' ? 'AI 建议加仓' : 'AI 建议观望'}
+                {aiActionLabel(aiAction.type, 'AI 建议')}
               </span>
               <p className="text-xs text-indigo-200/80 line-clamp-2 mt-1 leading-relaxed" title={aiAction.reason}>
                 {aiAction.reason}
