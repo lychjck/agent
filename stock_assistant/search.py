@@ -6,6 +6,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from .eastmoney import fetch_and_classify as eastmoney_fetch_and_classify
 from .llm import call_llm
 from .models import Holding, InstrumentClassification
 from .utils import config_bool, log
@@ -346,8 +347,8 @@ def classification_llm_enabled(config: dict[str, Any]) -> bool:
     return config_bool(llm.get("enabled", False))
 
 def classification_llm_config(config: dict[str, Any]) -> dict[str, Any]:
-    llm = dict(config.get("llm", {}))
-    llm.update({
+    # 基础硬编码默认值
+    base_defaults = {
         "enabled": True,
         "client": "urllib",
         "base_url": "http://10.33.207.193:1234/v1",
@@ -361,10 +362,39 @@ def classification_llm_config(config: dict[str, Any]) -> dict[str, Any]:
         "stream": False,
         "disable_thinking": True,
         "reasoning_effort": "",
-    })
-    llm.update(dict(config.get("classification", {}).get("llm", {})))
+    }
+    
+    # 从 config 中获取合并后的配置
+    global_llm = config.get("llm", {})
+    class_llm_full = config.get("classification", {}).get("llm", {})
+    
+    # 重点：判断用户是否在 config.toml 中【真正】设置了分类专用 LLM
+    # 我们通过检查某些关键字段是否与 DEFAULTS 不同来判断（这里简单处理：如果有 class_llm 且不是空，且有自定义字段）
+    # 或者更简单的逻辑：优先合并全局，再合并分类专用
+    
+    # 构造最终配置
+    final_llm = base_defaults.copy()
+    
+    # 1. 应用全局配置 (这里通常包含了用户在 config.toml [llm] 里的修改)
+    final_llm.update(global_llm)
+    
+    # 2. 应用分类专用配置
+    # 注意：由于 config 已经是 DEFAULTS 和 config.toml 合并后的结果，
+    # 这里的 class_llm_full 必然包含 DEFAULTS 里的 120。
+    # 我们只在确定它确实有“自定义”意义时才覆盖，或者我们调整策略：
+    # 如果全局配置里的超时更长，我们保留更长的那个。
+    
+    if class_llm_full:
+        for k, v in class_llm_full.items():
+            # 只有当值不是 None 且 (不是默认的 120 或者全局没设这个值) 时才更新
+            # 简单粗暴点：对于 timeout_seconds，取两者的最大值
+            if k == "timeout_seconds":
+                final_llm[k] = max(int(v), int(final_llm.get(k, 0)))
+            else:
+                final_llm[k] = v
+
     llm_config = dict(config)
-    llm_config["llm"] = llm
+    llm_config["llm"] = final_llm
     return llm_config
 
 def clamp_confidence(value: Any, fallback: float) -> float:
@@ -412,13 +442,182 @@ def classification_from_llm_result(
         reviewed_by_user=False,
     )
 
+def verify_classification_with_llm(
+    holding: Holding,
+    rule_result: dict[str, Any],
+    config: dict[str, Any],
+    reason: str = "",
+) -> InstrumentClassification | None:
+    """用 LLM 验证/修正天天基金结构化数据的规则分类结果。
+
+    与旧版直接从搜索证据分类不同，这里 LLM 的角色是"验证者"：
+    收到的是结构化的持仓数据 + 规则引擎的初步分类，
+    LLM 确认或修正即可。
+    """
+    if not classification_llm_enabled(config):
+        log(f"分类 LLM 未启用，直接使用规则分类: {holding.name} ({holding.code})")
+        return None
+
+    structured_evidence = rule_result.get("structured_evidence", {})
+    classification_reasons = rule_result.get("classification_reasons", [])
+
+    payload = {
+        "instrument": {"code": holding.code, "name": holding.name},
+        "rule_classification": {
+            "asset_class": rule_result.get("asset_class", "unknown"),
+            "sector": rule_result.get("sector", ""),
+            "strategy": rule_result.get("strategy", "unknown"),
+            "theme": rule_result.get("theme", ""),
+            "region": rule_result.get("region", "china_a"),
+            "issuer": rule_result.get("issuer", ""),
+            "confidence": rule_result.get("confidence", 0.5),
+            "reasons": classification_reasons,
+        },
+        "structured_evidence": structured_evidence,
+        "taxonomy": {
+            "asset_classes": sorted(ASSET_CLASSES),
+            "sectors": sorted(SECTORS),
+            "strategies": sorted(STRATEGIES),
+        },
+    }
+    prompt = (
+        "/no_think\n"
+        "你是基金和 ETF 标的分类验证器。\n"
+        "输入包含：\n"
+        "1. rule_classification: 规则引擎基于结构化数据（基金名称、持仓股票、仓位比例）的初步分类结果\n"
+        "2. structured_evidence: 来自天天基金的原始结构化数据（持仓股票、收益率、仓位等）\n\n"
+        "你的任务：\n"
+        "- 验证规则分类是否合理，如果合理则确认，如果不合理则修正\n"
+        "- 特别关注：持仓股票的行业是否与 sector 匹配\n"
+        "- 对于主动权益/混合基金（持仓跨多个行业），sector 应使用 multi_sector 或留空\n"
+        "- 如果规则分类看起来合理且证据充分，可以适当提高 confidence\n"
+        "- 如果证据不足以验证，保持或降低 confidence\n\n"
+        "必须只输出一个 JSON 对象，不要 markdown，不要解释。\n"
+        "字段要求：\n"
+        "- asset_class 必须来自 taxonomy.asset_classes\n"
+        "- sector 必须来自 taxonomy.sectors\n"
+        "- strategy 必须来自 taxonomy.strategies\n"
+        "- confidence 是 0 到 1 的数字\n"
+        "- verification_note: 简短说明你的判断（中文，一句话）\n\n"
+        "输出 JSON schema 示例：\n"
+        "{\"asset_class\":\"mixed_allocation\",\"sector\":\"materials\","
+        "\"theme\":\"resources\",\"region\":\"china_a\","
+        "\"strategy\":\"active_management\",\"tracked_index\":\"\","
+        "\"issuer\":\"华宝基金\",\"confidence\":0.88,"
+        "\"verification_note\":\"持仓以紫金矿业、洛阳钼业等矿业资源股为主，确认为资源主题混合基金\"}\n\n"
+        f"输入 JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+    llm = classification_llm_config(config)["llm"]
+    log(
+        "分类 LLM 验证调用: "
+        f"{holding.name} ({holding.code}) "
+        f"rule_asset_class={rule_result.get('asset_class')} "
+        f"rule_sector={rule_result.get('sector')} "
+        f"reason={reason or 'verify'} "
+        f"model={llm.get('model')} base_url={llm.get('base_url')}"
+    )
+    llm["log_context"] = (
+        f"classification_verify code={holding.code} name={holding.name} "
+        f"rule_class={rule_result.get('asset_class')} rule_sector={rule_result.get('sector')}"
+    )
+    try:
+        answer = call_llm(
+            [
+                {
+                    "role": "system",
+                    "content": "你是严格输出 JSON 的金融标的分类验证器。不要输出思考过程。",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            {**config, "llm": llm},
+        )
+    except Exception as exc:  # noqa: BLE001
+        log(f"分类 LLM 验证调用失败: {exc}")
+        return None
+
+    model_result = extract_json_object(answer)
+    if model_result is None:
+        log(f"分类 LLM 验证未返回合法 JSON: {answer[:300]}")
+        return None
+
+    # 验证返回字段合法性
+    asset_class = str(model_result.get("asset_class", "unknown")).strip()
+    sector = str(model_result.get("sector", "")).strip()
+    strategy = str(model_result.get("strategy", "unknown")).strip()
+    if asset_class not in ASSET_CLASSES:
+        log(f"LLM 验证返回非法 asset_class: {asset_class}，使用规则结果")
+        asset_class = rule_result.get("asset_class", "unknown")
+    if sector not in SECTORS:
+        log(f"LLM 验证返回非法 sector: {sector}，使用规则结果")
+        sector = rule_result.get("sector", "")
+    if strategy not in STRATEGIES:
+        log(f"LLM 验证返回非法 strategy: {strategy}，使用规则结果")
+        strategy = rule_result.get("strategy", "unknown")
+
+    confidence = clamp_confidence(model_result.get("confidence"), rule_result.get("confidence", 0.5))
+    verification_note = str(model_result.get("verification_note", ""))
+
+    # 构造 evidence tuple，包含结构化证据
+    evidence_dict = {
+        "source": "eastmoney_api",
+        "structured_data": structured_evidence,
+        "verification_note": verification_note,
+    }
+
+    return InstrumentClassification(
+        code=holding.code,
+        name=holding.name,
+        asset_class=asset_class,
+        sector=sector,
+        theme=str(model_result.get("theme", rule_result.get("theme", ""))).strip(),
+        region=str(model_result.get("region", "china_a")).strip() or "china_a",
+        strategy=strategy,
+        tracked_index=str(model_result.get("tracked_index", "")).strip(),
+        issuer=str(model_result.get("issuer", rule_result.get("issuer", ""))).strip(),
+        confidence=confidence,
+        source="eastmoney_llm_verified",
+        evidence=(evidence_dict,),
+        reviewed_by_user=False,
+    )
+
+
+def classification_from_rule_result(
+    holding: Holding,
+    rule_result: dict[str, Any],
+) -> InstrumentClassification:
+    """将天天基金规则分类结果转为 InstrumentClassification（不经过 LLM 验证）。"""
+    evidence_dict = {
+        "source": "eastmoney_api",
+        "structured_data": rule_result.get("structured_evidence", {}),
+        "classification_reasons": rule_result.get("classification_reasons", []),
+    }
+    return InstrumentClassification(
+        code=holding.code,
+        name=holding.name,
+        asset_class=rule_result.get("asset_class", "unknown"),
+        sector=rule_result.get("sector", ""),
+        theme=rule_result.get("theme", ""),
+        region=rule_result.get("region", "china_a"),
+        strategy=rule_result.get("strategy", "unknown"),
+        tracked_index="",
+        issuer=rule_result.get("issuer", ""),
+        confidence=rule_result.get("confidence", 0.5),
+        source="eastmoney_rule",
+        evidence=(evidence_dict,),
+        reviewed_by_user=False,
+    )
+
+
 def classify_from_search_evidence_with_llm(
     holding: Holding,
     results: list[dict[str, Any]],
     config: dict[str, Any],
     evidence_score: float,
+    reason: str = "",
 ) -> InstrumentClassification | None:
+    """旧版：直接从搜索证据分类（仅在天天基金 API 不可用时 fallback）。"""
     if not classification_llm_enabled(config):
+        log(f"分类 LLM 未启用: {holding.name} ({holding.code})")
         return None
     evidence = [search_result_evidence(item, config) for item in results]
     payload = {
@@ -448,6 +647,25 @@ def classify_from_search_evidence_with_llm(
         "\"issuer\":\"\",\"confidence\":0.82,\"evidence_urls\":[\"...\"]}\n\n"
         f"输入 JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
+    llm = classification_llm_config(config)["llm"]
+    source_summary = ", ".join(
+        f"{item.get('source', '') or 'unknown'}:tier{item.get('source_tier', '') or '?'}"
+        for item in evidence[:5]
+    )
+    log(
+        "分类 LLM 调用 (search fallback): "
+        f"{holding.name} ({holding.code}) "
+        f"reason={reason or 'direct_search'} "
+        f"evidence_count={len(evidence)} "
+        f"evidence_score={evidence_score:.4f} "
+        f"sources=[{source_summary}] "
+        f"model={llm.get('model')} base_url={llm.get('base_url')} "
+        f"disable_thinking={llm.get('disable_thinking')}"
+    )
+    llm["log_context"] = (
+        f"classification code={holding.code} name={holding.name} "
+        f"reason={reason or 'direct_search'} evidence_score={evidence_score:.4f}"
+    )
     try:
         answer = call_llm(
             [
@@ -457,7 +675,7 @@ def classify_from_search_evidence_with_llm(
                 },
                 {"role": "user", "content": prompt},
             ],
-            classification_llm_config(config),
+            {**config, "llm": llm},
         )
     except Exception as exc:  # noqa: BLE001
         log(f"分类 LLM 调用失败: {exc}")
@@ -491,21 +709,61 @@ def fallback_classification_from_search_rules(
         evidence=tuple(search_result_evidence(item, config) for item in results),
     )
 
-def suggest_classification_with_search(holding: Holding, config: dict[str, Any]) -> InstrumentClassification | None:
+def suggest_classification_with_search(
+    holding: Holding,
+    config: dict[str, Any],
+    reason: str = "",
+) -> InstrumentClassification | None:
+    from .classification import save_classification_cache
+
+    # ---------------------------------------------------------------
+    # 第一优先级：天天基金直接 API → 规则分类 → LLM 验证
+    # ---------------------------------------------------------------
+    log(f"分类开始: {holding.name} ({holding.code}) reason={reason or 'cache_unavailable'} 尝试天天基金直接 API")
+    timeout = int(config.get("search", {}).get("timeout_seconds", 20))
+    rule_result = eastmoney_fetch_and_classify(holding.code, holding.name, timeout)
+
+    if rule_result is not None:
+        # 尝试 LLM 验证
+        verified = verify_classification_with_llm(holding, rule_result, config, reason=reason)
+        if verified is not None:
+            log(
+                f"分类完成 (eastmoney + LLM 验证): {holding.name} ({holding.code}) "
+                f"asset_class={verified.asset_class} sector={verified.sector} "
+                f"confidence={verified.confidence:.4f}"
+            )
+            save_classification_cache(verified, config)
+            return verified
+
+        # LLM 不可用或验证失败，直接使用规则分类结果
+        cls = classification_from_rule_result(holding, rule_result)
+        log(
+            f"分类完成 (eastmoney 规则，无 LLM 验证): {holding.name} ({holding.code}) "
+            f"asset_class={cls.asset_class} sector={cls.sector} "
+            f"confidence={cls.confidence:.4f}"
+        )
+        save_classification_cache(cls, config)
+        return cls
+
+    # ---------------------------------------------------------------
+    # 第二优先级（fallback）：搜索引擎 → LLM 分类
+    # ---------------------------------------------------------------
+    log(f"天天基金 API 无数据，fallback 到搜索引擎: {holding.name} ({holding.code})")
     provider = build_search_provider(config)
     query = f"{holding.code} {holding.name} ETF 跟踪指数 行业 基金公司"
     max_results = int(config.get("search", {}).get("max_results", 5))
+    log(f"分类搜索开始: {holding.name} ({holding.code}) query={query!r}")
     results = provider.search(query, max_results)
     if not results:
+        log(f"分类搜索无结果: {holding.name} ({holding.code})")
         return None
-    
+
     score = score_classification_evidence(results, config)
     cls = (
-        classify_from_search_evidence_with_llm(holding, results, config, score)
+        classify_from_search_evidence_with_llm(holding, results, config, score, reason=reason)
         or fallback_classification_from_search_rules(holding, results, config, score)
     )
     if cls is not None:
-        from .classification import save_classification_cache
         save_classification_cache(cls, config)
         return cls
     return None
