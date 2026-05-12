@@ -17,3 +17,7 @@ logs/*
 !logs/.gitkeep
 data/holdings/*
 !data/holdings/.gitkeep
+data/state/*
+!data/state/.gitkeep
+data/research/*
+!data/research/.gitkeep

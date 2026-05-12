@@ -44,6 +44,93 @@ loss_alert_pct = -8.0
 gain_trim_pct = 20.0
 max_single_position_pct = 35.0
 
+[profile]
+base_currency = "CNY"
+risk_level = "balanced"
+investment_style = "long_term_etf"
+allow_external_search = false
+allow_external_llm = true
+
+[policy]
+cash_min_pct = 5
+max_single_position_pct = 20
+max_sector_pct = 35
+max_theme_pct = 25
+max_unknown_classification_pct = 10
+loss_alert_pct = -8
+gain_trim_pct = 20
+rebalance_drift_pct = 5
+rebalance_target_buffer_pct = 2
+
+[allocation_targets]
+broad_index = 40
+sector_equity = 25
+bond = 15
+overseas = 10
+commodity = 5
+cash = 5
+
+[classification]
+mode = "hybrid"
+require_user_review_below_confidence = 0.75
+cache_ttl_days = 90
+
+[classification.llm]
+enabled = true
+client = "urllib"
+base_url = "http://10.33.207.193:1234/v1"
+model = "google/gemma-4-31b"
+temperature = 0.0
+timeout_seconds = 120
+max_tokens = 2048
+stream = false
+disable_thinking = true
+
+[classifications."510300"]
+asset_class = "broad_index"
+sector = ""
+theme = "csi300"
+region = "china_a"
+strategy = "passive_index"
+reviewed_by_user = true
+
+[search]
+enabled = true
+provider = "tavily"
+cache_dir = "data/research"
+timeout_seconds = 20
+max_results = 5
+search_depth = "basic"
+# 可选：none/day/week/month/year。Tavily 会映射为 time_range，Brave 会映射为 freshness。
+freshness = "year"
+start_date = ""
+end_date = ""
+include_raw_content = false
+max_stored_content_chars = 4000
+api_key_env = ""
+manual_results_file = "data/research/manual_search_results.json"
+
+[search.providers.tavily]
+enabled = false
+api_key_env = "TAVILY_API_KEY"
+search_depth = "basic"
+topic = "finance"
+
+[search.providers.brave]
+enabled = false
+api_key_env = "BRAVE_SEARCH_API_KEY"
+
+[search.source_tiers]
+tier1 = "sse.com.cn,szse.cn,csindex.com.cn,cnindex.com.cn"
+tier2 = "eastmoney.com,10jqka.com.cn,fund.eastmoney.com"
+
+[agent]
+enabled = true
+strict_json = true
+llm_can_create_new_actions = false
+save_snapshots = true
+snapshot_dir = "data/state"
+
 [llm]
 enabled = false
 client = "openai"
@@ -57,3 +144,5 @@ max_tokens = 65536
 stream = true
 disable_thinking = false
 reasoning_effort = ""
+structured_output = "auto"
+repair_attempts = 1
