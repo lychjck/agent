@@ -22,3 +22,4 @@ data/state/*
 data/research/*
 !data/research/.gitkeep
 tt.py
+.agent

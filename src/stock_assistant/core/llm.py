@@ -156,18 +156,7 @@ def call_llm(
     else:
         log(f"LLM payload logging disabled; messages={len(messages)}", name="llm_payload")
 
-    api_key = llm_api_key(llm)
-    if not api_key and (
-        base_url.startswith("http://127.0.0.1")
-        or base_url.startswith("http://localhost")
-        or base_url.startswith("http://10.")
-        or base_url.startswith("http://192.168.")
-    ):
-        api_key = "not-needed"
-    
-    if not api_key and (base_url.startswith("https://api-inference.modelscope.cn") or base_url.startswith("https://easyrouter.io")):
-        env_name = str(llm.get("api_key_env", "")).strip() or "LLM_API_KEY"
-        raise RuntimeError(f"LLM API key 未配置，请设置环境变量 {env_name} 或在 .env 中写入 {env_name}=...")
+    api_key = llm_api_key(llm) or "not-needed"
     
     actual_config = config.copy()
     actual_config["llm"] = llm.copy()
