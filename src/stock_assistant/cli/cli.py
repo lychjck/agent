@@ -4,15 +4,15 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .config import DEFAULT_CONFIG, ensure_dirs, load_config
-from .models import Holding, InstrumentClassification
-from .utils import log
-from .tzzb import fetch_tzzb_holdings
-from .classification import classify_holding, classification_from_config, load_cached_classification
-from .analysis import analyze_holdings
-from .llm import llm_enabled, generate_llm_commentary
-from .report import write_report, report_markdown
-from .portfolio import summarize_portfolio, generate_portfolio_observations
+from stock_assistant.core.config import DEFAULT_CONFIG, ensure_dirs, load_config
+from stock_assistant.core.models import Holding, InstrumentClassification
+from stock_assistant.core.utils import log
+from stock_assistant.integrations.tzzb import fetch_tzzb_holdings
+from stock_assistant.services.classification import classify_holding, classification_from_config, load_cached_classification
+from stock_assistant.services.analysis import analyze_holdings
+from stock_assistant.core.llm import llm_enabled, generate_llm_commentary
+from stock_assistant.services.report import write_report, report_markdown
+from stock_assistant.services.portfolio import summarize_portfolio, generate_portfolio_observations
 
 def run(config: dict[str, Any]) -> Path:
     ensure_dirs(config)

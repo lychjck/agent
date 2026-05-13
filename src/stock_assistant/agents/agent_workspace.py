@@ -1,14 +1,14 @@
 from typing import Any
 
-from .agent import classify_for_agent, fund_analysis_result, holding_from_result, holdings_from_results
-from .agent_llm import build_agent_llm_context
-from .analysis import analyze_one
-from .market import fetch_bars
-from .memory import build_agent_snapshot, diff_agent_snapshots, load_latest_agent_snapshot
-from .models import Holding, InstrumentClassification, analysis_result_to_dict, holding_to_dict
-from .portfolio import generate_portfolio_observations, summarize_portfolio
-from .tzzb import fetch_tzzb_holdings
-from .utils import log
+from stock_assistant.agents.agent import classify_for_agent, fund_analysis_result, holding_from_result, holdings_from_results
+from stock_assistant.agents.agent_llm import build_agent_llm_context
+from stock_assistant.services.analysis import analyze_one
+from stock_assistant.services.market import fetch_bars
+from stock_assistant.core.memory import build_agent_snapshot, diff_agent_snapshots, load_latest_agent_snapshot
+from stock_assistant.core.models import Holding, InstrumentClassification, analysis_result_to_dict, holding_to_dict
+from stock_assistant.services.portfolio import generate_portfolio_observations, summarize_portfolio
+from stock_assistant.integrations.tzzb import fetch_tzzb_holdings
+from stock_assistant.core.utils import log
 
 
 class AgentWorkspace:

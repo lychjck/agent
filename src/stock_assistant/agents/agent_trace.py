@@ -3,8 +3,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .agent_executor import redact_sensitive
-from .utils import config_bool
+from stock_assistant.agents.agent_executor import redact_sensitive
+from stock_assistant.core.utils import config_bool
 
 
 class AgentTraceWriter:

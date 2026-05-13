@@ -1,6 +1,6 @@
 from typing import Any
 
-from .models import Holding, InstrumentClassification
+from stock_assistant.core.models import Holding, InstrumentClassification
 
 
 def value_map_to_pct(values: dict[str, float], total_value: float) -> dict[str, float]:

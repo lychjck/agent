@@ -11,9 +11,9 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from .config import ROOT
-from .models import Holding
-from .utils import extract_code, log, parse_number, pick_value, read_text_if_path, split_csv_setting
+from stock_assistant.core.config import ROOT
+from stock_assistant.core.models import Holding
+from stock_assistant.core.utils import extract_code, log, parse_number, pick_value, read_text_if_path, split_csv_setting
 
 TZZB_BASE_URL = "https://tzzb.10jqka.com.cn/caishen_httpserver/tzzb"
 TZZB_REFERER = "https://tzzb.10jqka.com.cn/pc/"

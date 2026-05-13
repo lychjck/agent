@@ -5,8 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .models import Holding, RiskFlag, CandidateAction
-from .utils import log
+from stock_assistant.core.models import Holding, RiskFlag, CandidateAction
+from stock_assistant.core.utils import log
 
 SNAPSHOT_FACT_FIELDS = (
     "ledger_summary",

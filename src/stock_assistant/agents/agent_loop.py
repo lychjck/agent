@@ -3,16 +3,16 @@ import json
 import time
 from typing import Any, AsyncIterator
 
-from .agent import save_ai_report
-from .agent_executor import execute_tool_call, tool_observation_message
-from .agent_llm import agent_report_schema_hint, parse_agent_report
-from .agent_tools import build_agent_tool_registry, tool_schemas
-from .agent_trace import AgentTraceWriter
-from .agent_workspace import AgentWorkspace
-from .llm import llm_enabled
-from .llm_tools import call_llm_tool_step
-from .memory import agent_snapshots_have_same_facts, save_agent_snapshot
-from .utils import config_bool, log
+from stock_assistant.agents.agent import save_ai_report
+from stock_assistant.agents.agent_executor import execute_tool_call, tool_observation_message
+from stock_assistant.agents.agent_llm import agent_report_schema_hint, parse_agent_report
+from stock_assistant.agents.agent_tools import build_agent_tool_registry, tool_schemas
+from stock_assistant.agents.agent_trace import AgentTraceWriter
+from stock_assistant.agents.agent_workspace import AgentWorkspace
+from stock_assistant.core.llm import llm_enabled
+from stock_assistant.core.llm_tools import call_llm_tool_step
+from stock_assistant.core.memory import agent_snapshots_have_same_facts, save_agent_snapshot
+from stock_assistant.core.utils import config_bool, log
 
 
 def agent_run_id() -> str:
@@ -39,8 +39,12 @@ def agent_log(run_id: str, message: str, *, turn: int | None = None, level: str 
     log(f"[tool-agent run={run_id}{turn_part}] {message}", level=level, name="tool_agent")
 
 
-def build_initial_agent_messages(goal: str, tools: list[dict[str, Any]]) -> list[dict[str, str]]:
-    tool_json = json.dumps(tools, ensure_ascii=False, indent=2)
+def build_initial_agent_messages(goal: str, tools: list[dict[str, Any]], use_native_tools: bool = False) -> list[dict[str, str]]:
+    tool_text = ""
+    if not use_native_tools:
+        tool_json = json.dumps(tools, ensure_ascii=False, indent=2)
+        tool_text = f"可用工具如下。你只能调用这些工具，arguments 必须符合 parameters。\n{tool_json}\n\n"
+        
     report_schema = json.dumps(agent_report_schema_hint(), ensure_ascii=False, indent=2)
     system = (
         "你是一个受控的中文持仓分析工具调用 Agent。"
@@ -56,8 +60,7 @@ def build_initial_agent_messages(goal: str, tools: list[dict[str, Any]]) -> list
     )
     user = (
         f"用户目标：{goal}\n\n"
-        "可用工具如下。你只能调用这些工具，arguments 必须符合 parameters。\n"
-        f"{tool_json}\n\n"
+        f"{tool_text}"
         "第一轮必须输出 research_plan，不能调用工具，不能输出 final_report。"
         "research_plan 必须先从任务出发列出 information_needs，再列 available_tool_mapping 和 missing_capabilities。\n"
         "ETF/基金分析的信息需求至少考虑：当前组合权重、标的类型、跟踪指数、底层持仓/前十大持仓、行业/区域/风格暴露、"
@@ -183,7 +186,8 @@ async def run_tool_agent_events(
     workspace = AgentWorkspace(config, cached_results=cached_results)
     registry = build_agent_tool_registry(config)
     schemas = tool_schemas(registry)
-    messages = build_initial_agent_messages(goal, schemas)
+    use_native_tools = config_bool(config.get("agent", {}).get("use_native_tools", False))
+    messages = build_initial_agent_messages(goal, schemas, use_native_tools=use_native_tools)
     max_turns = int(config.get("agent", {}).get("max_tool_turns", 12) or 12)
     max_calls = int(config.get("agent", {}).get("max_tool_calls", 16) or 16)
     tool_call_count = 0

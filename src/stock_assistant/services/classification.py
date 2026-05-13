@@ -4,9 +4,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .models import Holding, InstrumentClassification
-from .search import suggest_classification_with_search
-from .utils import log
+from stock_assistant.core.models import Holding, InstrumentClassification
+from stock_assistant.integrations.search import suggest_classification_with_search
+from stock_assistant.core.utils import log
 
 def classification_from_config(holding: Holding, config: dict[str, Any]) -> InstrumentClassification | None:
     record = config.get("classifications", {}).get(holding.code)

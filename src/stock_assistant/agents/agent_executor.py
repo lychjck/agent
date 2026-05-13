@@ -3,9 +3,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
-from .agent_tools import AgentToolSpec
-from .agent_workspace import AgentWorkspace
-from .llm_tools import LlmToolCall
+from stock_assistant.agents.agent_tools import AgentToolSpec
+from stock_assistant.agents.agent_workspace import AgentWorkspace
+from stock_assistant.core.llm_tools import LlmToolCall
 
 
 SENSITIVE_KEY_PARTS = (

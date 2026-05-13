@@ -1,9 +1,9 @@
 import statistics
 from typing import Any
 
-from .market import fetch_bars
-from .models import Bar, Holding
-from .utils import log
+from stock_assistant.services.market import fetch_bars
+from stock_assistant.core.models import Bar, Holding
+from stock_assistant.core.utils import log
 
 def moving_average(values: list[float], window: int) -> float | None:
     if len(values) < window:

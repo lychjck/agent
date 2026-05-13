@@ -4,9 +4,9 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .llm import call_llm, llm_enabled
-from .models import CandidateAction, Holding, InstrumentClassification, RiskFlag, candidate_action_to_dict
-from .utils import config_bool, get_attr, log
+from stock_assistant.core.llm import call_llm, llm_enabled
+from stock_assistant.core.models import CandidateAction, Holding, InstrumentClassification, RiskFlag, candidate_action_to_dict
+from stock_assistant.core.utils import config_bool, get_attr, log
 
 
 VALID_SEVERITIES = {"low", "medium", "high", "critical"}

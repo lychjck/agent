@@ -6,10 +6,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from .eastmoney import fetch_and_classify as eastmoney_fetch_and_classify
-from .llm import call_llm
-from .models import Holding, InstrumentClassification
-from .utils import config_bool, log
+from stock_assistant.integrations.eastmoney import fetch_and_classify as eastmoney_fetch_and_classify
+from stock_assistant.core.llm import call_llm
+from stock_assistant.core.models import Holding, InstrumentClassification
+from stock_assistant.core.utils import config_bool, log
 
 ASSET_CLASSES = {
     "broad_index",       # 宽基指数基金 (如沪深300 ETF)

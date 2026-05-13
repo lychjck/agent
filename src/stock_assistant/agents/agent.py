@@ -3,21 +3,21 @@ import json
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from .agent_llm import build_agent_llm_context, generate_agent_report_with_llm
-from .analysis import analyze_one
-from .classification import classification_from_config, load_cached_classification
-from .market import fetch_bars
-from .memory import (
+from stock_assistant.agents.agent_llm import build_agent_llm_context, generate_agent_report_with_llm
+from stock_assistant.services.analysis import analyze_one
+from stock_assistant.services.classification import classification_from_config, load_cached_classification
+from stock_assistant.services.market import fetch_bars
+from stock_assistant.core.memory import (
     agent_snapshots_have_same_facts,
     build_agent_snapshot,
     diff_agent_snapshots,
     load_latest_agent_snapshot,
     save_agent_snapshot,
 )
-from .models import Holding, InstrumentClassification, analysis_result_to_dict, holding_to_dict
-from .portfolio import generate_portfolio_observations, summarize_portfolio
-from .tzzb import fetch_tzzb_holdings
-from .utils import config_bool, log
+from stock_assistant.core.models import Holding, InstrumentClassification, analysis_result_to_dict, holding_to_dict
+from stock_assistant.services.portfolio import generate_portfolio_observations, summarize_portfolio
+from stock_assistant.integrations.tzzb import fetch_tzzb_holdings
+from stock_assistant.core.utils import config_bool, log
 
 
 def agent_event(step: str, status: str = "", **extra: Any) -> dict[str, Any]:

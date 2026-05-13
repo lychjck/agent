@@ -3,9 +3,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .agent_llm import classification_record, technical_record
-from .agent_workspace import AgentWorkspace
-from .models import holding_to_dict
+from stock_assistant.agents.agent_llm import classification_record, technical_record
+from stock_assistant.agents.agent_workspace import AgentWorkspace
+from stock_assistant.core.models import holding_to_dict
 
 
 ALLOWED_HOLDING_FIELDS = {

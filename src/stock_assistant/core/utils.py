@@ -1,36 +1,14 @@
-import datetime as dt
 import math
 import os
 import re
-import shlex
-import sys
 from pathlib import Path
 from typing import Any
-
-from .models import Holding, Bar
 
 import logging
 
 # 配置一个全局的基础 Logger
 logger = logging.getLogger("stock_assistant")
 
-def setup_basic_logging(level: int = logging.INFO) -> None:
-    """初始化基础日志配置"""
-    handler = logging.StreamHandler(sys.stderr)
-    formatter = logging.Formatter(
-        "[%(asctime)s] [%(levelname)-7s] [%(name)s] %(message)s",
-        datefmt="%H:%M:%S"
-    )
-    handler.setFormatter(formatter)
-    
-    # 清除旧的 handlers 避免重复打印
-    root = logging.getLogger()
-    if root.handlers:
-        for h in root.handlers:
-            root.removeHandler(h)
-            
-    root.addHandler(handler)
-    root.setLevel(level)
 
 def log(message: str, level: str = "INFO", name: str = "core") -> None:
     """

@@ -3,8 +3,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
-from .agent_llm import llm_structured_kwargs
-from .llm import call_llm
+from stock_assistant.agents.agent_llm import llm_structured_kwargs
+from stock_assistant.core.llm import call_llm
 
 
 class LlmToolCall(BaseModel):
@@ -204,6 +204,12 @@ def call_llm_tool_step(
     model_override: str | None = None,
 ) -> LlmToolStep:
     request_kwargs = llm_structured_kwargs(config)
+    
+    # 兼容原生工具调用：如果在配置中开启了原生工具支持，则将 tools 传给底层 SDK
+    if tools and config.get("agent", {}).get("use_native_tools", False):
+        request_kwargs["tools"] = tools
+        # 如果模型支持强制工具调用，可以加上: request_kwargs["tool_choice"] = "auto"
+        
     text = call_llm(
         messages,
         config,

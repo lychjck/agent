@@ -9,7 +9,7 @@ import re
 import urllib.request
 from typing import Any
 
-from .utils import log
+from stock_assistant.core.utils import log
 
 # ---------------------------------------------------------------------------
 # 关键词 → 行业映射表

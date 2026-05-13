@@ -2,9 +2,9 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from .utils import deep_merge, load_env_file, log
+from stock_assistant.core.utils import deep_merge, load_env_file, log
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent.parent
 DEFAULT_CONFIG = ROOT / "config.toml"
 
 DEFAULTS: dict[str, Any] = {
@@ -15,23 +15,12 @@ DEFAULTS: dict[str, Any] = {
     },
     "ledger": {
         "url": "",
-        "mode": "manual",
-        "download_glob": "*.csv,*.xlsx",
-        "wait_seconds": 600,
-        "open_browser": True,
+        "mode": "tzzb_api",
         "curl_file": "",
         "cookie_file": "",
         "cookie": "",
         "uid": "",
         "api_timeout_seconds": 30,
-    },
-    "columns": {
-        "code": "证券代码,基金代码,代码,产品代码,symbol,code",
-        "name": "证券名称,基金名称,名称,产品名称,name",
-        "quantity": "持仓数量,可用份额,持有份额,数量,份额,quantity,shares",
-        "cost_price": "成本价,持仓成本价,买入均价,成本,cost_price",
-        "market_value": "持仓市值,市值,最新市值,market_value,value",
-        "profit_pct": "收益率,持仓收益率,盈亏比例,profit_pct,return_pct",
     },
     "market": {
         "provider": "sina",

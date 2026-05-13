@@ -10,11 +10,29 @@ from stock_assistant import (
     load_config, load_env_file, ensure_dirs, fetch_tzzb_holdings,
     llm_enabled, log, holding_to_dict, load_latest_agent_snapshot, list_agent_snapshots
 )
-from stock_assistant.agent import run_agent_analysis, run_agent_analysis_events
-from stock_assistant.agent_loop import run_tool_agent_events
-from stock_assistant.cli import build_portfolio_profile
-from stock_assistant.utils import config_bool
-from stock_assistant.utils import setup_basic_logging
+from stock_assistant.agents.agent import run_agent_analysis, run_agent_analysis_events
+from stock_assistant.agents.agent_loop import run_tool_agent_events
+from stock_assistant.cli.cli import build_portfolio_profile
+from stock_assistant.core.utils import config_bool
+import logging
+import sys
+
+def setup_basic_logging(level: int = logging.INFO) -> None:
+    """初始化基础日志配置"""
+    handler = logging.StreamHandler(sys.stderr)
+    formatter = logging.Formatter(
+        "[%(asctime)s] [%(levelname)-7s] [%(name)s] %(message)s",
+        datefmt="%H:%M:%S"
+    )
+    handler.setFormatter(formatter)
+    
+    root = logging.getLogger()
+    if root.handlers:
+        for h in root.handlers:
+            root.removeHandler(h)
+            
+    root.addHandler(handler)
+    root.setLevel(level)
 
 # 初始化日志系统
 setup_basic_logging()
@@ -81,7 +99,6 @@ def get_profile(refresh_classification: bool = False):
     try:
         profile = build_portfolio_profile(
             config,
-            holdings_file=None,
             refresh_classification=refresh_classification,
         )
         log("组合画像生成成功", name="api")
@@ -94,10 +111,10 @@ def get_profile(refresh_classification: bool = False):
 def classify_one(code: str):
     log(f"POST /api/classify/{code} - 强制触发单个标的分类", name="api")
     try:
-        from stock_assistant.cli import load_profile_holdings
-        from stock_assistant.search import suggest_classification_with_search
+        from stock_assistant.cli.cli import load_profile_holdings
+        from stock_assistant.integrations.search import suggest_classification_with_search
         
-        holdings, _, _ = load_profile_holdings(config, holdings_file=None)
+        holdings, _, _ = load_profile_holdings(config)
         holding = next((h for h in holdings if h.code == code), None)
         
         if not holding:
@@ -163,17 +180,6 @@ async def get_daily_klines(symbol: str):
 def sse_payload(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-LEGACY_STEP_MAP = {
-    "sync_holdings": 1,
-    "classify": 2,
-    "market_data": 2,
-    "technical_analysis": 2,
-    "portfolio_profile": 3,
-    "portfolio_observations": 3,
-    "llm_report": 3,
-    "save_snapshot": 4,
-    "done": 4,
-}
 
 @app.post("/api/agent/run/stream")
 async def run_agent_stream(req: AgentRunRequest = AgentRunRequest()):
@@ -255,32 +261,6 @@ def get_agent_history():
         })
     return {"history": history}
 
-@app.post("/api/analyze")
-async def analyze_portfolio(req: AnalyzeRequest = AnalyzeRequest()):
-    if not llm_enabled(config):
-        raise HTTPException(status_code=400, detail="LLM 未启用，请在 config.toml 中配置")
-    
-    async def event_generator():
-        try:
-            async for event in run_agent_analysis_events(
-                config,
-                cached_results=req.cached_results,
-                model_override=req.model,
-            ):
-                payload = {
-                    "status": event.get("status", ""),
-                    "step": LEGACY_STEP_MAP.get(str(event.get("step")), 3),
-                }
-                if "technical_results" in event:
-                    payload["technical_results"] = event["technical_results"]
-                if event.get("step") == "done":
-                    payload["result"] = event.get("snapshot", {}).get("agent_report")
-                yield sse_payload(payload)
-        except Exception as e:  # noqa: BLE001
-            log(f"分析失败: {e}", level="ERROR", name="api")
-            yield sse_payload({"error": str(e)})
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 if __name__ == "__main__":
     import uvicorn

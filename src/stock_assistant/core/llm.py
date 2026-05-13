@@ -6,7 +6,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from .utils import compact_result_for_llm, config_bool, log
+from stock_assistant.core.utils import compact_result_for_llm, config_bool, log
 
 def llm_enabled(config: dict[str, Any]) -> bool:
     value = config.get("llm", {}).get("enabled", False)

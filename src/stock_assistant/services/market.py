@@ -5,8 +5,8 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from .models import Bar
-from .utils import extract_code, log
+from stock_assistant.core.models import Bar
+from stock_assistant.core.utils import extract_code, log
 
 def secid_for_cn_etf(code: str) -> str:
     clean = extract_code(code)

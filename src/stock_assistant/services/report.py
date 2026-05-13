@@ -2,8 +2,8 @@ import datetime as dt
 from pathlib import Path
 from typing import Any
 
-from .models import Bar, Holding
-from .utils import fmt, log
+from stock_assistant.core.models import Bar, Holding
+from stock_assistant.core.utils import fmt, log
 
 def report_markdown(results: list[dict[str, Any]], source_file: Path, llm_commentary: str | None = None) -> str:
     today = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
