@@ -1,5 +1,5 @@
 import unittest
-from stock_assistant.memory import (
+from stock_assistant.core.memory import (
     agent_snapshot_fingerprint,
     agent_snapshots_have_same_facts,
     diff_agent_snapshots,

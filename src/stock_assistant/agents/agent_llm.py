@@ -514,6 +514,25 @@ def filter_evidence_refs(refs: list[str], evidence_index: dict[str, Any]) -> lis
     return valid
 
 
+def normalize_report_payload_aliases(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload)
+    for section in ("diagnosis", "holding_analysis", "action_reviews", "watch_conditions", "questions"):
+        rows = normalized.get(section)
+        if not isinstance(rows, list):
+            continue
+        clean_rows: list[Any] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                clean_rows.append(row)
+                continue
+            clean_row = dict(row)
+            if "evidence_refs" not in clean_row and "evidence_ref" in clean_row:
+                clean_row["evidence_refs"] = clean_row.get("evidence_ref")
+            clean_rows.append(clean_row)
+        normalized[section] = clean_rows
+    return normalized
+
+
 def legacy_action_item(action: CandidateAction | dict[str, Any], review: dict[str, Any] | None = None) -> dict[str, Any]:
     record = action_record(action)
     if review:
@@ -650,6 +669,7 @@ def validate_agent_report(
     config: dict[str, Any],
     holdings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    payload = normalize_report_payload_aliases(payload)
     try:
         report_model = AgentReport.model_validate(payload)
     except ValidationError as exc:
@@ -707,6 +727,8 @@ def validate_agent_report(
     llm_can_create = config_bool(config.get("agent", {}).get("llm_can_create_new_actions", False))
     for index, item in enumerate(report["action_reviews"], start=1):
         action_id = str(item.get("candidate_action_id", ""))
+        if action_id.strip().lower() in {"", "none", "null", "n/a"}:
+            continue
         if action_id not in action_map and not llm_can_create:
             questions.append({
                 "id": f"question:unknown_action:{index}",

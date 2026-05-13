@@ -1,12 +1,12 @@
 import unittest
 from copy import deepcopy
 
-from stock_assistant.agent_executor import execute_tool_call
-from stock_assistant.agent_tools import build_agent_tool_registry
-from stock_assistant.agent_workspace import AgentWorkspace
-from stock_assistant.config import DEFAULTS
-from stock_assistant.llm_tools import LlmToolCall
-from stock_assistant.models import Holding
+from stock_assistant.agents.agent_executor import execute_tool_call
+from stock_assistant.agents.agent_tools import build_agent_tool_registry
+from stock_assistant.agents.agent_workspace import AgentWorkspace
+from stock_assistant.core.config import DEFAULTS
+from stock_assistant.core.llm_tools import LlmToolCall
+from stock_assistant.core.models import Holding
 
 
 class TestAgentExecutor(unittest.TestCase):

@@ -5,14 +5,14 @@ from copy import deepcopy
 from unittest.mock import patch
 
 from stock_assistant import DEFAULTS, Bar, CandidateAction, Holding, InstrumentClassification, RiskFlag
-from stock_assistant.agent_llm import (
+from stock_assistant.agents.agent_llm import (
     build_agent_llm_context,
     fallback_agent_report,
     llm_structured_kwargs,
     parse_agent_report,
     strip_json_markdown,
 )
-from stock_assistant.portfolio import generate_portfolio_observations, summarize_portfolio
+from stock_assistant.services.portfolio import generate_portfolio_observations, summarize_portfolio
 
 
 class TestAgentLlm(unittest.TestCase):
@@ -238,6 +238,35 @@ class TestAgentLlm(unittest.TestCase):
         self.assertEqual(report["action_items"][0]["type"], "watch")
         self.assertEqual(report["action_items"][0]["target"], "沪深300ETF")
 
+    def test_parse_agent_report_accepts_singular_evidence_ref_alias(self):
+        context = self.context()
+        payload = {
+            "summary": {"brief": "组合需要继续观察。"},
+            "diagnosis": [],
+            "holding_analysis": [
+                {
+                    "target_code": "510300",
+                    "target_name": "沪深300ETF",
+                    "action_type": "watch",
+                    "title": "等待趋势确认",
+                    "reason": "引用字段使用了旧别名。",
+                    "evidence_ref": ["holding:510300:technical"],
+                }
+            ],
+            "action_reviews": [{"candidate_action_id": "none", "stance": "defer", "reason": "无候选动作"}],
+        }
+
+        report = parse_agent_report(
+            json.dumps(payload, ensure_ascii=False),
+            [],
+            context["evidence_index"],
+            self.config,
+            holdings=context["holdings"],
+        )
+
+        self.assertEqual(report["holding_analysis"][0]["evidence_refs"], ["holding:510300:technical"])
+        self.assertEqual(report["questions"], [])
+
     def test_parse_agent_report_preserves_rule_reduce_when_llm_softens_to_watch(self):
         context = self.context()
         context["holdings"][0]["technical"]["rule_action"] = "减仓/暂停加仓"
@@ -332,7 +361,7 @@ class TestAgentLlm(unittest.TestCase):
         self.assertEqual(report["action_reviews"], [])
         self.assertTrue(any("未知候选动作" in item["question"] for item in report["questions"]))
 
-    @patch("stock_assistant.agent_llm.call_llm")
+    @patch("stock_assistant.agents.agent_llm.call_llm")
     def test_parse_agent_report_repairs_invalid_json(self, call_llm):
         context = self.context()
         call_llm.return_value = json.dumps({
@@ -351,7 +380,7 @@ class TestAgentLlm(unittest.TestCase):
         self.assertEqual(report["summary"]["brief"], "修复成功")
         call_llm.assert_called_once()
 
-    @patch("stock_assistant.agent_llm.call_llm")
+    @patch("stock_assistant.agents.agent_llm.call_llm")
     def test_parse_agent_report_falls_back_when_repair_fails(self, call_llm):
         context = self.context()
         call_llm.return_value = "{not json"

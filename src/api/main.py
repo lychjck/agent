@@ -181,6 +181,42 @@ def sse_payload(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def legacy_analyze_step(event: dict) -> int:
+    step = event.get("step")
+    if step in {"sync_holdings", "market_data"}:
+        return 1
+    if step == "technical_analysis":
+        return 2
+    if step in {"classify", "portfolio_profile", "portfolio_observations", "llm_report"}:
+        return 3
+    if step in {"save_snapshot", "done"}:
+        return 4
+    return 0
+
+
+@app.post("/api/analyze")
+async def analyze_legacy(req: AnalyzeRequest = AnalyzeRequest()):
+    async def event_generator():
+        try:
+            async for event in run_agent_analysis_events(
+                config,
+                cached_results=req.cached_results,
+                model_override=req.model,
+            ):
+                payload = dict(event)
+                payload["step"] = legacy_analyze_step(event)
+                if event.get("step") == "done":
+                    snapshot = event.get("snapshot")
+                    if isinstance(snapshot, dict):
+                        payload["result"] = snapshot.get("agent_report")
+                yield sse_payload(payload)
+        except Exception as e:  # noqa: BLE001
+            log(f"legacy analyze 失败: {e}", level="ERROR", name="api")
+            yield sse_payload({"step": 0, "error": str(e)})
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
 @app.post("/api/agent/run/stream")
 async def run_agent_stream(req: AgentRunRequest = AgentRunRequest()):
     async def event_generator():

@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-import api
+import api.main as api
 
 
 class TestApiProfile(unittest.TestCase):
@@ -15,25 +15,23 @@ class TestApiProfile(unittest.TestCase):
             "observations": [],
             "classifications": {},
         }
-        with patch("api.build_portfolio_profile", return_value=expected) as build_profile:
+        with patch("api.main.build_portfolio_profile", return_value=expected) as build_profile:
             response = TestClient(api.app).get("/api/profile")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), expected)
         build_profile.assert_called_once_with(
             api.config,
-            holdings_file=None,
             refresh_classification=False,
         )
 
     def test_profile_endpoint_can_refresh_classification(self):
-        with patch("api.build_portfolio_profile", return_value={"summary": {}}) as build_profile:
+        with patch("api.main.build_portfolio_profile", return_value={"summary": {}}) as build_profile:
             response = TestClient(api.app).get("/api/profile?refresh_classification=true")
 
         self.assertEqual(response.status_code, 200)
         build_profile.assert_called_once_with(
             api.config,
-            holdings_file=None,
             refresh_classification=True,
         )
 

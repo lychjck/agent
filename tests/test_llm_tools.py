@@ -3,9 +3,9 @@ import unittest
 from copy import deepcopy
 from unittest.mock import patch
 
-from stock_assistant.config import DEFAULTS
-from stock_assistant.llm_tools import call_llm_tool_step
-from stock_assistant.llm_tools import parse_llm_tool_step
+from stock_assistant.core.config import DEFAULTS
+from stock_assistant.core.llm_tools import call_llm_tool_step
+from stock_assistant.core.llm_tools import parse_llm_tool_step
 
 
 class TestLlmTools(unittest.TestCase):
@@ -93,7 +93,7 @@ class TestLlmTools(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_llm_tool_step(json.dumps({"type": "tool_calls", "tool_calls": [{"arguments": {}}]}))
 
-    @patch("stock_assistant.llm_tools.call_llm")
+    @patch("stock_assistant.core.llm_tools.call_llm")
     def test_call_llm_tool_step_repairs_bad_protocol_once(self, call_llm):
         call_llm.side_effect = [
             "我需要先读取持仓。",

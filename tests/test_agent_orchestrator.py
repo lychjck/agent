@@ -7,10 +7,10 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-import api
-from stock_assistant.agent import run_agent_analysis_events
-from stock_assistant.config import DEFAULTS
-from stock_assistant.models import Bar, Holding
+import api.main as api
+from stock_assistant.agents.agent import run_agent_analysis_events
+from stock_assistant.core.config import DEFAULTS
+from stock_assistant.core.models import Bar, Holding
 
 
 def fake_bars() -> list[Bar]:
@@ -51,7 +51,7 @@ class TestAgentOrchestrator(unittest.TestCase):
                 Holding(code="000259", name="农银区间收益混合", market_value=500, asset_type="fund"),
             ]
 
-            with patch("stock_assistant.agent.fetch_bars", return_value=fake_bars()):
+            with patch("stock_assistant.agents.agent.fetch_bars", return_value=fake_bars()):
                 events = asyncio.run(
                     collect_events(
                         config,
@@ -80,7 +80,7 @@ class TestAgentOrchestrator(unittest.TestCase):
             yield {"step": "sync_holdings", "status": "正在同步投资账本"}
             yield {"step": "done", "status": "完成", "snapshot": {"agent_report": {"summary": {}}}}
 
-        with patch("api.run_agent_analysis_events", fake_events):
+        with patch("api.main.run_agent_analysis_events", fake_events):
             response = TestClient(api.app).post("/api/agent/run/stream", json={"model": "m"})
 
         self.assertEqual(response.status_code, 200)
@@ -100,7 +100,7 @@ class TestAgentOrchestrator(unittest.TestCase):
                 "snapshot": {"agent_report": {"summary": {"brief": "ok"}}},
             }
 
-        with patch("api.llm_enabled", return_value=True), patch("api.run_agent_analysis_events", fake_events):
+        with patch("api.main.llm_enabled", return_value=True), patch("api.main.run_agent_analysis_events", fake_events):
             response = TestClient(api.app).post("/api/analyze", json={"model": "m"})
 
         self.assertEqual(response.status_code, 200)

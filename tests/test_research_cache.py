@@ -186,7 +186,7 @@ class TestResearchCache(unittest.TestCase):
         provider = build_search_provider(cfg)
         self.assertEqual(provider.search("query", 5), [])
 
-    @patch("stock_assistant.search.eastmoney_fetch_and_classify", return_value=None)
+    @patch("stock_assistant.integrations.search.eastmoney_fetch_and_classify", return_value=None)
     def test_manual_json_search(self, mock_em):
         """天天基金 API 不可用时，fallback 到 manual_json 搜索。"""
         manual_path = self.cache_dir / "manual.json"
@@ -215,7 +215,7 @@ class TestResearchCache(unittest.TestCase):
         self.assertIn("证券公司指数", cache_data["evidence"][0]["content"])
         self.assertEqual(cache_data["source"], "search_rule_fallback")
 
-    @patch("stock_assistant.search.eastmoney_fetch_and_classify", return_value=None)
+    @patch("stock_assistant.integrations.search.eastmoney_fetch_and_classify", return_value=None)
     def test_manual_json_search_with_llm_classifier(self, mock_em):
         """天天基金 API 不可用时，fallback 到搜索引擎 + LLM 分类。"""
         cfg = dict(self.config)
@@ -241,7 +241,7 @@ class TestResearchCache(unittest.TestCase):
         }), encoding="utf-8")
         h = Holding(code="000259", name="农银区间收益混合")
 
-        with patch("stock_assistant.search.call_llm") as call_llm:
+        with patch("stock_assistant.integrations.search.call_llm") as call_llm:
             call_llm.return_value = json.dumps({
                 "asset_class": "mixed_allocation",
                 "sector": "multi_sector",
@@ -276,13 +276,13 @@ class TestResearchCache(unittest.TestCase):
         fallback_cfg = dict(self.config)
         fallback_cfg["search"] = dict(fallback_cfg["search"])
         fallback_cfg["search"]["enabled"] = False
-        with patch("stock_assistant.search.eastmoney_fetch_and_classify", return_value=None):
+        with patch("stock_assistant.integrations.search.eastmoney_fetch_and_classify", return_value=None):
             cls2 = classify_holding(h2, fallback_cfg)
         self.assertEqual(cls2.source, "local_heuristic")
 
         # Unknown (mock 掉天天基金 API)
         h3 = Holding(code="000001", name="Unknown")
-        with patch("stock_assistant.search.eastmoney_fetch_and_classify", return_value=None):
+        with patch("stock_assistant.integrations.search.eastmoney_fetch_and_classify", return_value=None):
             cls3 = classify_holding(h3, fallback_cfg)
         self.assertEqual(cls3.source, "unknown")
 
@@ -304,7 +304,7 @@ class TestResearchCache(unittest.TestCase):
                 "top_holdings": [{"code": "601899", "name": "紫金矿业"}],
             },
         }
-        with patch("stock_assistant.search.eastmoney_fetch_and_classify", return_value=mock_rule_result):
+        with patch("stock_assistant.integrations.search.eastmoney_fetch_and_classify", return_value=mock_rule_result):
             cls = suggest_classification_with_search(h, self.config)
 
         self.assertIsNotNone(cls)

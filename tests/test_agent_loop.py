@@ -5,10 +5,11 @@ import unittest
 from copy import deepcopy
 from unittest.mock import patch
 
-from stock_assistant.agent_loop import run_tool_agent_events
-from stock_assistant.config import DEFAULTS
-from stock_assistant.llm_tools import LlmToolCall, LlmToolStep
-from stock_assistant.models import Holding
+from stock_assistant.agents.agent_loop import missing_technical_codes, run_tool_agent_events, split_oversized_tool_calls
+from stock_assistant.agents.agent_workspace import AgentWorkspace
+from stock_assistant.core.config import DEFAULTS
+from stock_assistant.core.llm_tools import LlmToolCall, LlmToolStep
+from stock_assistant.core.models import Holding
 
 
 async def collect_events(*args, **kwargs):
@@ -138,7 +139,7 @@ class TestAgentLoop(unittest.TestCase):
             ),
         ]
 
-        with patch("stock_assistant.agent_loop.call_llm_tool_step", side_effect=responses):
+        with patch("stock_assistant.agents.agent_loop.call_llm_tool_step", side_effect=responses):
             events = asyncio.run(
                 collect_events(
                     config,
@@ -178,7 +179,7 @@ class TestAgentLoop(unittest.TestCase):
             raw_text=json.dumps({"type": "research_plan", "research_plan": {"information_needs": ["当前持仓"]}}),
         )
 
-        with patch("stock_assistant.agent_loop.call_llm_tool_step", return_value=response):
+        with patch("stock_assistant.agents.agent_loop.call_llm_tool_step", return_value=response):
             events = asyncio.run(
                 collect_events(
                     config,
@@ -200,7 +201,7 @@ class TestAgentLoop(unittest.TestCase):
             raw_text=json.dumps({"type": "tool_calls", "tool_calls": [{"name": "get_current_holdings"}]}),
         )
 
-        with patch("stock_assistant.agent_loop.call_llm_tool_step", return_value=response):
+        with patch("stock_assistant.agents.agent_loop.call_llm_tool_step", return_value=response):
             events = asyncio.run(
                 collect_events(
                     config,
@@ -234,7 +235,7 @@ class TestAgentLoop(unittest.TestCase):
             ),
         ]
 
-        with patch("stock_assistant.agent_loop.call_llm_tool_step", side_effect=responses):
+        with patch("stock_assistant.agents.agent_loop.call_llm_tool_step", side_effect=responses):
             events = asyncio.run(
                 collect_events(
                     config,
@@ -247,6 +248,33 @@ class TestAgentLoop(unittest.TestCase):
 
         self.assertEqual(events[-1]["step"], "error")
         self.assertIn("observation_reflection", events[-1]["error"])
+
+    def test_splits_oversized_technical_tool_calls(self):
+        codes = [f"{index:06d}" for index in range(25)]
+        calls = split_oversized_tool_calls([
+            LlmToolCall(id="call_001", name="get_holding_technical", arguments={"codes": codes})
+        ])
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls[0].arguments["codes"]), 20)
+        self.assertEqual(len(calls[1].arguments["codes"]), 5)
+
+    def test_missing_technical_codes_requires_full_goal_coverage(self):
+        workspace = AgentWorkspace(
+            self.config(),
+            holdings=[
+                Holding(code="510300", name="沪深300ETF", market_value=1000, asset_type="etf"),
+                Holding(code="513130", name="恒生科技", market_value=500, asset_type="etf"),
+            ],
+        )
+        workspace._technical_by_code["510300"] = {  # noqa: SLF001
+            "holding": {"code": "510300", "name": "沪深300ETF"},
+            "ok": True,
+            "action": "持有观察",
+        }
+
+        self.assertEqual(missing_technical_codes(workspace, "分析当前持仓"), [])
+        self.assertEqual(missing_technical_codes(workspace, "分析每个 ETF 的建议"), ["513130"])
 
 
 if __name__ == "__main__":

@@ -714,7 +714,7 @@ def suggest_classification_with_search(
     config: dict[str, Any],
     reason: str = "",
 ) -> InstrumentClassification | None:
-    from .classification import save_classification_cache
+    from stock_assistant.services.classification import save_classification_cache
 
     # ---------------------------------------------------------------
     # 第一优先级：天天基金直接 API → 规则分类 → LLM 验证

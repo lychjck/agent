@@ -8,8 +8,8 @@ from stock_assistant import (
     BraveSearchProvider,
     score_classification_evidence
 )
-from stock_assistant.search import search_freshness_for_provider, search_result_evidence
-from stock_assistant.search import extract_json_object, classification_llm_config
+from stock_assistant.integrations.search import search_freshness_for_provider, search_result_evidence
+from stock_assistant.integrations.search import extract_json_object, classification_llm_config
 
 class TestSearchProvider(unittest.TestCase):
     def test_build_tavily_provider(self):

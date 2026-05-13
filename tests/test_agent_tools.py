@@ -4,10 +4,10 @@ import unittest
 from copy import deepcopy
 from unittest.mock import patch
 
-from stock_assistant.agent_tools import build_agent_tool_registry
-from stock_assistant.agent_workspace import AgentWorkspace
-from stock_assistant.config import DEFAULTS
-from stock_assistant.models import Bar, Holding
+from stock_assistant.agents.agent_tools import build_agent_tool_registry
+from stock_assistant.agents.agent_workspace import AgentWorkspace
+from stock_assistant.core.config import DEFAULTS
+from stock_assistant.core.models import Bar, Holding
 
 
 def fake_bars() -> list[Bar]:
@@ -53,7 +53,7 @@ class TestAgentTools(unittest.TestCase):
     def test_workspace_caches_technical_results(self):
         workspace = AgentWorkspace(self.config, holdings=self.holdings)
 
-        with patch("stock_assistant.agent_workspace.fetch_bars", return_value=fake_bars()) as fetch_bars:
+        with patch("stock_assistant.agents.agent_workspace.fetch_bars", return_value=fake_bars()) as fetch_bars:
             first = workspace.ensure_technical(["510300"])
             second = workspace.ensure_technical(["510300"])
 

@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-import api
+import api.main as api
 
 
 class TestAgentToolApi(unittest.TestCase):
@@ -14,7 +14,7 @@ class TestAgentToolApi(unittest.TestCase):
             yield {"step": "tool_observation", "tool": "get_current_holdings", "status": "返回 1 只持仓"}
             yield {"step": "done", "snapshot": {"agent_report": {"summary": {"brief": "ok"}}}}
 
-        with patch("api.run_tool_agent_events", fake_events):
+        with patch("api.main.run_tool_agent_events", fake_events):
             response = TestClient(api.app).post(
                 "/api/agent/run/stream",
                 json={"mode": "tool_agent", "goal": "分析当前持仓"},
@@ -29,7 +29,7 @@ class TestAgentToolApi(unittest.TestCase):
             yield {"step": "sync_holdings", "status": "同步"}
             yield {"step": "done", "snapshot": {"agent_report": {"summary": {"brief": "pipeline"}}}}
 
-        with patch("api.run_agent_analysis_events", fake_events):
+        with patch("api.main.run_agent_analysis_events", fake_events):
             response = TestClient(api.app).post(
                 "/api/agent/run/stream",
                 json={"mode": "pipeline"},
