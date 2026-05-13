@@ -147,15 +147,23 @@ def call_llm(
     context_suffix = f" context={context}" if context else ""
     timeout = llm.get("timeout_seconds", 120)
     log(f"正在调用 LLM: {base_url} (model={model}){context_suffix} timeout={timeout}s")
-    
-    # 记录发送给 LLM 的 Payload (Prompt 内容)
-    try:
-        payload_str = json.dumps(messages, ensure_ascii=False, indent=2)
-        log(f"LLM Request Payload:\n{payload_str}", name="llm_payload")
-    except Exception as e:
-        log(f"无法记录 LLM Payload: {e}", level="WARN")
+    if config_bool(llm.get("log_payload", False)):
+        try:
+            payload_str = json.dumps(messages, ensure_ascii=False, indent=2)
+            log(f"LLM Request Payload:\n{payload_str}", name="llm_payload")
+        except Exception as e:
+            log(f"无法记录 LLM Payload: {e}", level="WARN")
+    else:
+        log(f"LLM payload logging disabled; messages={len(messages)}", name="llm_payload")
 
     api_key = llm_api_key(llm)
+    if not api_key and (
+        base_url.startswith("http://127.0.0.1")
+        or base_url.startswith("http://localhost")
+        or base_url.startswith("http://10.")
+        or base_url.startswith("http://192.168.")
+    ):
+        api_key = "not-needed"
     
     if not api_key and (base_url.startswith("https://api-inference.modelscope.cn") or base_url.startswith("https://easyrouter.io")):
         env_name = str(llm.get("api_key_env", "")).strip() or "LLM_API_KEY"

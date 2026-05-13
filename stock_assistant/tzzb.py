@@ -1,7 +1,5 @@
-import csv
 import dataclasses
 import datetime as dt
-import glob
 import json
 import os
 import re
@@ -10,11 +8,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import webbrowser
-import zipfile
 from pathlib import Path
 from typing import Any
-from xml.etree import ElementTree
 
 from .config import ROOT
 from .models import Holding
@@ -26,103 +21,6 @@ TZZB_ACCOUNT_LIST = "/caishen_fund/pc/account/v1/account_list"
 TZZB_STOCK_POSITION = "/caishen_fund/pc/asset/v1/stock_position"
 TZZB_FUND_POSITION = "/caishen_fund/pc/asset/v1/fund_position"
 TZZB_UID_COOKIE_NAMES = ("userid", "user_id", "uid", "hexin_uid", "u")
-
-def read_csv_rows(path: Path) -> list[dict[str, str]]:
-    raw = path.read_bytes()
-    last_error: UnicodeDecodeError | None = None
-    for encoding in ("utf-8-sig", "utf-8", "gb18030", "big5"):
-        try:
-            text = raw.decode(encoding)
-            reader = csv.DictReader(text.splitlines())
-            return [{str(k): str(v or "") for k, v in row.items()} for row in reader]
-        except UnicodeDecodeError as exc:
-            last_error = exc
-    raise ValueError(f"无法识别 CSV 编码: {path}") from last_error
-
-def column_index(cell_ref: str) -> int:
-    letters = re.sub(r"[^A-Z]", "", cell_ref.upper())
-    index = 0
-    for letter in letters:
-        index = index * 26 + ord(letter) - ord("A") + 1
-    return max(index - 1, 0)
-
-def xlsx_cell_value(cell: ElementTree.Element, shared: list[str], ns: dict[str, str]) -> str:
-    value_node = cell.find("main:v", ns)
-    if value_node is None or value_node.text is None:
-        inline = cell.find("main:is/main:t", ns)
-        return inline.text if inline is not None and inline.text else ""
-    value = value_node.text
-    if cell.attrib.get("t") == "s":
-        index = int(value)
-        return shared[index] if 0 <= index < len(shared) else ""
-    return value
-
-def read_xlsx_rows(path: Path) -> list[dict[str, str]]:
-    ns = {"main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
-    with zipfile.ZipFile(path) as archive:
-        shared: list[str] = []
-        if "xl/sharedStrings.xml" in archive.namelist():
-            root = ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))
-            for item in root.findall("main:si", ns):
-                shared.append("".join(node.text or "" for node in item.findall(".//main:t", ns)))
-
-        sheet_names = sorted(name for name in archive.namelist() if re.match(r"xl/worksheets/sheet\d+\.xml", name))
-        if not sheet_names:
-            raise ValueError(f"XLSX 中没有工作表: {path}")
-        sheet = ElementTree.fromstring(archive.read(sheet_names[0]))
-
-    table: list[list[str]] = []
-    for row in sheet.findall(".//main:row", ns):
-        cells: dict[int, str] = {}
-        for cell in row.findall("main:c", ns):
-            ref = cell.attrib.get("r", "")
-            col = column_index(ref)
-            cells[col] = xlsx_cell_value(cell, shared, ns)
-        if cells:
-            max_col = max(cells)
-            table.append([cells.get(index, "") for index in range(max_col + 1)])
-
-    header = next((row for row in table if any(value.strip() for value in row)), [])
-    if not header:
-        return []
-    rows = []
-    for values in table[table.index(header) + 1 :]:
-        row = {header[index]: values[index] if index < len(values) else "" for index in range(len(header))}
-        if any(value.strip() for value in row.values()):
-            rows.append(row)
-    return rows
-
-def read_table(path: Path) -> list[dict[str, str]]:
-    suffix = path.suffix.lower()
-    if suffix == ".csv":
-        return read_csv_rows(path)
-    if suffix == ".xlsx":
-        return read_xlsx_rows(path)
-    raise ValueError(f"暂不支持的持仓文件格式: {path.suffix}")
-
-def parse_holdings(path: Path, config: dict[str, Any]) -> list[Holding]:
-    rows = read_table(path)
-    columns = config["columns"]
-    holdings: list[Holding] = []
-    for row in rows:
-        code = extract_code(pick_value(row, columns["code"]))
-        name = pick_value(row, columns["name"]) or code
-        if not code:
-            continue
-        holdings.append(
-            Holding(
-                code=code,
-                name=name,
-                quantity=parse_number(pick_value(row, columns["quantity"])),
-                cost_price=parse_number(pick_value(row, columns["cost_price"])),
-                market_value=parse_number(pick_value(row, columns["market_value"])),
-                profit_pct=parse_number(pick_value(row, columns["profit_pct"])),
-                source_row=row,
-            )
-        )
-    if not holdings:
-        raise ValueError(f"没有从持仓文件中解析到证券代码: {path}")
-    return holdings
 
 def extract_cookie_from_curl(curl_text: str) -> str:
     try:
@@ -404,78 +302,4 @@ def fetch_tzzb_holdings(config: dict[str, Any]) -> tuple[list[Holding], Path, di
     source = archive_tzzb_snapshot(snapshot, config)
     return merged_holdings, source, summary
 
-def newest_file(patterns: list[str], directories: list[Path], since: float | None = None) -> Path | None:
-    candidates: list[Path] = []
-    for directory in directories:
-        for pattern in patterns:
-            candidates.extend(Path(item) for item in glob.glob(str(directory / pattern)))
-    existing = [path for path in candidates if path.is_file() and (since is None or path.stat().st_mtime >= since)]
-    return max(existing, key=lambda path: path.stat().st_mtime) if existing else None
 
-def wait_for_download(config: dict[str, Any], since: float) -> Path:
-    ledger = config["ledger"]
-    patterns = split_csv_setting(ledger["download_glob"])
-    dirs = [Path(config["paths"]["download_dir"]).expanduser(), Path.home() / "Downloads"]
-    deadline = time.time() + int(ledger["wait_seconds"])
-    log(f"等待新的持仓文件: patterns={patterns}, dirs={[str(path) for path in dirs]}")
-    log("如果浏览器已经打开，请登录投资账本并导出持仓 CSV/XLSX。")
-    while time.time() < deadline:
-        hit = newest_file(patterns, dirs, since=since)
-        if hit:
-            log(f"发现持仓文件: {hit}")
-            return hit
-        time.sleep(3)
-    raise TimeoutError(f"等待持仓文件超时，目录: {', '.join(str(path) for path in dirs)}")
-
-def download_with_playwright(config: dict[str, Any], started_at: float) -> Path:
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as exc:
-        raise RuntimeError("playwright 未安装；请先执行 `python3 -m pip install playwright` 和 `python3 -m playwright install chromium`") from exc
-
-    ledger = config["ledger"]
-    url = str(ledger.get("url", "")).strip()
-    if not url:
-        raise ValueError("ledger.url 为空，无法用 Playwright 打开投资账本")
-
-    download_dir = Path(config["paths"]["download_dir"]).expanduser()
-    selectors = split_csv_setting(ledger.get("download_selectors", ""))
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=False)
-        context = browser.new_context(accept_downloads=True)
-        page = context.new_page()
-        page.goto(url, wait_until="domcontentloaded")
-        if selectors:
-            with page.expect_download(timeout=int(ledger["wait_seconds"]) * 1000) as download_info:
-                for selector in selectors:
-                    page.locator(selector).first.click()
-            download = download_info.value
-            target = download_dir / download.suggested_filename
-            download.save_as(target)
-            browser.close()
-            return target
-        browser.close()
-    return wait_for_download(config, started_at)
-
-def open_ledger_and_download(config: dict[str, Any]) -> Path:
-    ledger = config["ledger"]
-    started_at = time.time()
-    if ledger.get("mode") == "playwright":
-        return download_with_playwright(config, started_at)
-
-    url = str(ledger.get("url", "")).strip()
-    if url and bool(ledger.get("open_browser", True)):
-        log(f"打开投资账本: {url}")
-        webbrowser.open(url)
-    elif not url:
-        log("ledger.url 为空，无法自动打开投资账本。你需要手动打开账本并导出持仓文件。")
-    return wait_for_download(config, started_at)
-
-def archive_holding_file(path: Path, config: dict[str, Any]) -> Path:
-    archive_dir = Path(config["paths"]["archive_dir"]).expanduser()
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    stamped = f"{dt.datetime.now():%Y%m%d-%H%M%S}-{path.name}"
-    target = archive_dir / stamped
-    target.write_bytes(path.read_bytes())
-    log(f"归档持仓文件: {target}")
-    return target
