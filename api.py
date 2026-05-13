@@ -11,7 +11,9 @@ from stock_assistant import (
     llm_enabled, log, holding_to_dict, load_latest_agent_snapshot, list_agent_snapshots
 )
 from stock_assistant.agent import run_agent_analysis, run_agent_analysis_events
+from stock_assistant.agent_loop import run_tool_agent_events
 from stock_assistant.cli import build_portfolio_profile
+from stock_assistant.utils import config_bool
 from stock_assistant.utils import setup_basic_logging
 
 # 初始化日志系统
@@ -39,6 +41,8 @@ class AnalyzeRequest(BaseModel):
 class AgentRunRequest(BaseModel):
     cached_results: list[dict] | None = None
     model: str | None = None
+    mode: str = "pipeline"
+    goal: str | None = None
 
 @app.get("/api/holdings")
 def get_holdings():
@@ -175,12 +179,24 @@ LEGACY_STEP_MAP = {
 async def run_agent_stream(req: AgentRunRequest = AgentRunRequest()):
     async def event_generator():
         try:
-            async for event in run_agent_analysis_events(
-                config,
-                cached_results=req.cached_results,
-                model_override=req.model,
+            if req.mode == "tool_agent" or (
+                req.mode == "default" and config_bool(config.get("agent", {}).get("tool_agent_default", False))
             ):
-                yield sse_payload(event)
+                goal = req.goal or "分析当前持仓，给出组合风险、每个 ETF 的建议和需要确认的问题"
+                async for event in run_tool_agent_events(
+                    config,
+                    goal=goal,
+                    cached_results=req.cached_results,
+                    model_override=req.model,
+                ):
+                    yield sse_payload(event)
+            else:
+                async for event in run_agent_analysis_events(
+                    config,
+                    cached_results=req.cached_results,
+                    model_override=req.model,
+                ):
+                    yield sse_payload(event)
         except Exception as e:  # noqa: BLE001
             log(f"agent stream 失败: {e}", level="ERROR", name="api")
             yield sse_payload({"step": "error", "error": str(e)})
@@ -190,6 +206,23 @@ async def run_agent_stream(req: AgentRunRequest = AgentRunRequest()):
 @app.post("/api/agent/run")
 async def run_agent(req: AgentRunRequest = AgentRunRequest()):
     try:
+        if req.mode == "tool_agent" or (
+            req.mode == "default" and config_bool(config.get("agent", {}).get("tool_agent_default", False))
+        ):
+            snapshot = None
+            async for event in run_tool_agent_events(
+                config,
+                goal=req.goal or "分析当前持仓，给出组合风险、每个 ETF 的建议和需要确认的问题",
+                cached_results=req.cached_results,
+                model_override=req.model,
+            ):
+                if event.get("step") == "error":
+                    raise RuntimeError(str(event.get("error") or event.get("status") or "tool_agent failed"))
+                if event.get("step") == "done":
+                    snapshot = event.get("snapshot")
+            if snapshot is None:
+                raise RuntimeError("tool_agent 没有生成 snapshot")
+            return snapshot
         return await run_agent_analysis(
             config,
             cached_results=req.cached_results,

@@ -1,10 +1,23 @@
 import { useState, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { RefreshCw, TrendingUp, TrendingDown, Activity, DollarSign, Wallet, ShieldAlert, Cpu, Landmark, LineChart, PieChart as PieChartIcon, RotateCcw, Box, ArrowDownUp, Database, Layers, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { RefreshCw, TrendingUp, TrendingDown, Activity, DollarSign, Wallet, ShieldAlert, Cpu, Landmark, LineChart, PieChart as PieChartIcon, RotateCcw, Box, ArrowDownUp, Database, Layers, AlertTriangle, CheckCircle2, ChevronRight, FileText, Wrench, MessageSquare, Braces } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, AreaChart, Area, XAxis, YAxis, CartesianGrid } from 'recharts';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
+
+type AgentTraceEntry = {
+  id: string;
+  time: string;
+  step: string;
+  title: string;
+  subtitle: string;
+  tone: 'indigo' | 'cyan' | 'emerald' | 'amber' | 'red' | 'slate';
+  payload: AgentPayload;
+  turn?: number;
+};
+
+type AgentPayload = Record<string, unknown>;
 
 const formatMoney = (value: any) => `¥ ${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const formatPct = (value: any) => `${Number(value || 0).toFixed(2)}%`;
@@ -88,6 +101,119 @@ const pctRows = (bucket: Record<string, number> | undefined) => Object.entries(b
   .filter((item) => item.pct > 0)
   .sort((a, b) => b.pct - a.pct);
 
+const agentStepNumber = (step: string | number | undefined) => {
+  if (typeof step === 'number') return step;
+  if (step === 'agent_start' || step === 'llm_turn' || step === 'research_plan' || step === 'llm_decision') return 1;
+  if (step === 'tool_call') return 2;
+  if (step === 'tool_observation' || step === 'observation_reflection') return 3;
+  if (step === 'final_report' || step === 'save_snapshot' || step === 'done') return 4;
+  return 3;
+};
+
+const isRecord = (value: unknown): value is AgentPayload => (
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+);
+
+const textValue = (value: unknown) => {
+  if (value === undefined || value === null) return '';
+  return String(value);
+};
+
+const formatJson = (value: unknown) => {
+  if (value === undefined || value === null || value === '') return '';
+  if (typeof value === 'string') {
+    try {
+      return JSON.stringify(JSON.parse(value), null, 2);
+    } catch {
+      return value;
+    }
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+};
+
+const compactSnapshotForTrace = (snapshot: unknown) => {
+  if (!isRecord(snapshot)) return snapshot;
+  const agentReport = isRecord(snapshot.agent_report) ? snapshot.agent_report : {};
+  return {
+    generated_at: snapshot.generated_at,
+    model: snapshot.model,
+    portfolio: snapshot.portfolio,
+    risk_flags: snapshot.risk_flags,
+    candidate_actions_count: Array.isArray(snapshot.candidate_actions) ? snapshot.candidate_actions.length : 0,
+    action_items: agentReport.action_items,
+    summary: agentReport.summary,
+  };
+};
+
+const traceDisplayPayload = (payload: unknown) => {
+  if (!isRecord(payload)) return payload;
+  const clean = { ...payload };
+  if (clean.snapshot) clean.snapshot = compactSnapshotForTrace(clean.snapshot);
+  return clean;
+};
+
+const traceTitle = (payload: AgentPayload) => {
+  const step = textValue(payload.step);
+  const turn = payload.turn ? `第 ${payload.turn} 轮` : '';
+  if (step === 'agent_start') return '启动 Agent';
+  if (step === 'llm_turn') return `${turn} LLM 请求`;
+  if (step === 'research_plan') return `${turn} 研究计划`;
+  if (step === 'observation_reflection') return `${turn} 工具结果反思`;
+  if (step === 'llm_decision') return payload.decision_type === 'final_report' ? `${turn} LLM 决定生成报告` : `${turn} LLM 决定调用工具`;
+  if (step === 'tool_call') return `调用工具 ${textValue(payload.tool)}`.trim();
+  if (step === 'tool_observation') return `工具返回 ${textValue(payload.tool)}`.trim();
+  if (step === 'final_report') return '生成最终报告';
+  if (step === 'save_snapshot') return '保存快照';
+  if (step === 'done') return '流程完成';
+  if (step === 'error') return '执行出错';
+  return textValue(payload.status) || step || 'Agent 事件';
+};
+
+const traceSubtitle = (payload: AgentPayload) => {
+  if (payload.reasoning_summary) return textValue(payload.reasoning_summary);
+  if (payload.missing_capabilities) return `缺失能力：${Array.isArray(payload.missing_capabilities) ? payload.missing_capabilities.length : 0} 项`;
+  if (payload.summary) return textValue(payload.summary);
+  if (payload.message) return textValue(payload.message);
+  if (payload.status) return textValue(payload.status);
+  if (payload.error) return textValue(payload.error);
+  return '';
+};
+
+const traceTone = (payload: AgentPayload): AgentTraceEntry['tone'] => {
+  if (payload.step === 'error' || payload.ok === false) return 'red';
+  if (payload.step === 'tool_call') return 'cyan';
+  if (payload.step === 'tool_observation') return 'emerald';
+  if (payload.step === 'research_plan') return 'amber';
+  if (payload.step === 'observation_reflection') return 'amber';
+  if (payload.step === 'final_report' || payload.step === 'done') return 'indigo';
+  if (payload.step === 'save_snapshot') return 'amber';
+  return 'slate';
+};
+
+const TRACE_TONE_CLASS: Record<AgentTraceEntry['tone'], string> = {
+  indigo: 'border-indigo-500/30 bg-indigo-500/10 text-indigo-300',
+  cyan: 'border-cyan-500/30 bg-cyan-500/10 text-cyan-300',
+  emerald: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
+  amber: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
+  red: 'border-red-500/30 bg-red-500/10 text-red-300',
+  slate: 'border-slate-700 bg-slate-800/60 text-slate-300',
+};
+
+const buildAgentTraceEntry = (payload: AgentPayload): AgentTraceEntry => ({
+  id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  time: new Date().toLocaleTimeString([], { hour12: false }),
+  step: textValue(payload.step) || 'event',
+  title: traceTitle(payload),
+  subtitle: traceSubtitle(payload),
+  tone: traceTone(payload),
+  payload,
+  turn: typeof payload.turn === 'number' ? payload.turn : undefined,
+});
+
 export default function App() {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -97,12 +223,14 @@ export default function App() {
   const [profileError, setProfileError] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [aiData, setAiData] = useState<any>(null);
-  const [analysisLogs, setAnalysisLogs] = useState<string[]>([]);
+  const [analysisTrace, setAnalysisTrace] = useState<AgentTraceEntry[]>([]);
+  const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [currentStep, setCurrentStep] = useState(0);
-  const [selectedModel, setSelectedModel] = useState('inclusionAI/Ling-2.6-1T');
+  const [selectedModel, setSelectedModel] = useState('google/gemma-4-26b-a4b');
   const [technicalResults, setTechnicalResults] = useState<any[] | null>(null);
   
   const MODELS = [
+    { id: 'google/gemma-4-26b-a4b', name: 'Gemma 4 26B A4B (本地)', provider: 'Local' },
     { id: 'inclusionAI/Ling-2.6-1T', name: 'Ling-2.6-1T (推荐)', provider: 'ModelScope' },
     { id: 'ZhipuAI/GLM-5.1', name: 'GLM-5.1', provider: 'ModelScope' },
     { id: 'moonshotai/Kimi-K2.5', name: 'Kimi-K2.5', provider: 'ModelScope' },
@@ -193,16 +321,19 @@ export default function App() {
     setHasError(false);
     if (!resumeData) {
       setAiData(null);
-      setAnalysisLogs([]);
+      setAnalysisTrace([]);
+      setSelectedTraceId(null);
       setCurrentStep(0);
       setTechnicalResults(null);
     }
     
     try {
-      const response = await fetch('/api/analyze', { 
+      const response = await fetch('/api/agent/run/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
+          mode: 'tool_agent',
+          goal: '分析当前持仓，给出组合风险、每个 ETF 的建议和需要确认的问题',
           cached_results: resumeData,
           model: selectedModel
         })
@@ -212,41 +343,69 @@ export default function App() {
 
       if (!reader) return;
 
+      const handleAgentPayload = (payload: AgentPayload) => {
+        const entry = buildAgentTraceEntry(payload);
+        setAnalysisTrace(prev => [...prev, entry]);
+        setSelectedTraceId(entry.id);
+
+        if (payload.step) {
+          setCurrentStep(agentStepNumber(textValue(payload.step)));
+        }
+        if (payload.technical_results) {
+          setTechnicalResults(payload.technical_results as unknown[]);
+        }
+        const snapshot = isRecord(payload.snapshot) ? payload.snapshot : null;
+        if (snapshot?.technical_results) {
+          setTechnicalResults(snapshot.technical_results as unknown[]);
+        }
+        if (snapshot?.agent_report) {
+          setAiData(snapshot.agent_report);
+          setHasError(false);
+        }
+        if (payload.result) {
+          setAiData(payload.result);
+          setHasError(false);
+        }
+        if (payload.error) {
+          setHasError(true);
+        }
+      };
+
+      const parseSseBlock = (block: string) => {
+        const data = block
+          .split('\n')
+          .filter(line => line.startsWith('data:'))
+          .map(line => line.replace(/^data:\s?/, ''))
+          .join('\n')
+          .trim();
+        if (!data) return;
+        try {
+          const parsed = JSON.parse(data);
+          if (isRecord(parsed)) {
+            handleAgentPayload(parsed);
+          }
+        } catch (e) {
+          console.error('Failed to parse SSE block:', block, e);
+        }
+      };
+
+      let buffer = '';
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
 
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const payload = JSON.parse(line.substring(6));
-              if (payload.status) {
-                setAnalysisLogs(prev => [...prev, payload.status]);
-                if (payload.step) setCurrentStep(payload.step);
-              }
-              if (payload.technical_results) {
-                setTechnicalResults(payload.technical_results);
-              }
-              if (payload.result) {
-                setAiData(payload.result);
-                setHasError(false);
-              }
-              if (payload.error) {
-                setAnalysisLogs(prev => [...prev, `❌ 错误: ${payload.error}`]);
-                setHasError(true);
-              }
-            } catch (e) {
-              console.error('Failed to parse SSE line:', line, e);
-            }
-          }
-        }
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split('\n\n');
+        buffer = blocks.pop() || '';
+        blocks.forEach(parseSseBlock);
       }
+      buffer += decoder.decode();
+      if (buffer.trim()) parseSseBlock(buffer);
     } catch (err: any) {
       console.error(err);
-      setAnalysisLogs(prev => [...prev, `❌ 分析过程中发生意外错误: ${err.message}`]);
+      const entry = buildAgentTraceEntry({ step: 'error', error: err.message, status: '分析过程中发生意外错误' });
+      setAnalysisTrace(prev => [...prev, entry]);
+      setSelectedTraceId(entry.id);
       setHasError(true);
     }
     setAnalyzing(false);
@@ -266,6 +425,7 @@ export default function App() {
 
   const etfProfit = etfHoldings.reduce((sum: number, h: any) => sum + (h.hold_profit || 0), 0);
   const fundProfit = fundHoldings.reduce((sum: number, h: any) => sum + (h.hold_profit || 0), 0);
+  const selectedTrace = analysisTrace.find(item => item.id === selectedTraceId) || analysisTrace[analysisTrace.length - 1] || null;
 
   return (
     <div className="min-h-screen bg-slate-950 p-4 sm:p-6 md:p-8 xl:p-12 text-slate-100 font-sans selection:bg-indigo-500/30">
@@ -345,12 +505,15 @@ export default function App() {
         )}
 
         {/* Analysis Progress Logs */}
-        {activeTab === 'analysis' && (analyzing || analysisLogs.length > 0) && (
+        {activeTab === 'analysis' && (analyzing || analysisTrace.length > 0) && (
           <section className="bg-slate-900/80 backdrop-blur-2xl border border-indigo-500/30 rounded-3xl p-6 shadow-[0_0_50px_-12px_rgba(99,102,241,0.3)] animate-in fade-in zoom-in duration-500 relative overflow-hidden group/logs">
             <div className="absolute top-4 right-4 z-10">
-               {analysisLogs.length > 0 && !analyzing && (
+               {analysisTrace.length > 0 && !analyzing && (
                  <button 
-                   onClick={() => setAnalysisLogs([])}
+                   onClick={() => {
+                     setAnalysisTrace([]);
+                     setSelectedTraceId(null);
+                   }}
                    className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-500 hover:text-slate-300 transition-colors"
                    title="清除日志"
                  >
@@ -375,7 +538,7 @@ export default function App() {
                 <div>
                   <h3 className="text-lg font-bold text-slate-100">{analyzing ? 'AI 诊断引擎正在运行' : 'AI 诊断任务已完成'}</h3>
                   <p className="text-slate-500 text-xs">
-                    {analyzing ? `正在执行第 ${currentStep}/4 步分析任务` : `分析流程已结束，共执行 ${analysisLogs.length} 项检查`}
+                    {analyzing ? `正在执行第 ${currentStep}/4 步分析任务` : `分析流程已结束，共记录 ${analysisTrace.length} 个事件`}
                   </p>
                 </div>
               </div>
@@ -385,20 +548,56 @@ export default function App() {
                 ))}
               </div>
             </div>
-            
-            <div className="bg-slate-950/50 rounded-2xl p-4 font-mono text-sm border border-slate-800/50 max-h-[200px] overflow-y-auto space-y-2 custom-scrollbar shadow-inner">
-              {analysisLogs.map((log, i) => (
-                <div key={i} className="flex gap-3 text-slate-400 animate-in slide-in-from-left-2 duration-300">
-                  <span className="text-indigo-500/50 shrink-0">[{new Date().toLocaleTimeString([], {hour12: false})}]</span>
-                  <span className={i === analysisLogs.length - 1 && analyzing ? 'text-indigo-300 font-medium' : ''}>{log}</span>
+
+            <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+              <div className="xl:col-span-5 rounded-2xl border border-slate-800/70 bg-slate-950/40 overflow-hidden">
+                <div className="px-4 py-3 border-b border-slate-800/70 flex items-center justify-between">
+                  <span className="text-sm font-bold text-slate-200">执行轨迹</span>
+                  <span className="text-xs text-slate-500">{analysisTrace.length} events</span>
                 </div>
-              ))}
-              {analyzing && (
-                <div className="flex gap-3 text-indigo-400/60 animate-pulse">
-                  <span className="shrink-0">[..:..:..]</span>
-                  <span>正在处理中...</span>
+                <div className="max-h-[360px] overflow-y-auto custom-scrollbar p-2 space-y-2">
+                  {analysisTrace.map((item) => {
+                    const selected = selectedTrace?.id === item.id;
+                    return (
+                      <button
+                        key={item.id}
+                        onClick={() => setSelectedTraceId(item.id)}
+                        className={`w-full text-left rounded-xl border p-3 transition-all ${
+                          selected
+                            ? `${TRACE_TONE_CLASS[item.tone]} shadow-lg shadow-black/10`
+                            : 'border-slate-800 bg-slate-900/50 hover:bg-slate-800/70 text-slate-300'
+                        }`}
+                      >
+                        <div className="flex items-start gap-3">
+                          <div className={`mt-0.5 rounded-lg border p-1.5 ${selected ? 'border-current/30 bg-black/10' : TRACE_TONE_CLASS[item.tone]}`}>
+                            <AgentTraceIcon entry={item} />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-sm font-bold truncate">{item.title}</span>
+                              <span className="text-[11px] font-mono text-slate-500 shrink-0">{item.time}</span>
+                            </div>
+                            {item.subtitle && (
+                              <p className="mt-1 text-xs leading-relaxed text-slate-400 line-clamp-2">{item.subtitle}</p>
+                            )}
+                          </div>
+                          <ChevronRight className={`w-4 h-4 mt-1 shrink-0 transition-transform ${selected ? 'rotate-90 text-current' : 'text-slate-600'}`} />
+                        </div>
+                      </button>
+                    );
+                  })}
+                  {analyzing && (
+                    <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-3 text-sm text-indigo-300 flex items-center gap-2 animate-pulse">
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      等待下一条 Agent 事件...
+                    </div>
+                  )}
                 </div>
-              )}
+              </div>
+
+              <div className="xl:col-span-7 rounded-2xl border border-slate-800/70 bg-slate-950/40 overflow-hidden">
+                <AgentTraceDetail entry={selectedTrace} />
+              </div>
             </div>
 
             {/* Smart Retry Button */}
@@ -557,7 +756,7 @@ export default function App() {
             {/* AI Analysis Result Panel (only shows when aiData exists) */}
             {activeTab === 'analysis' && (
               <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                {!aiData && !analyzing && analysisLogs.length === 0 && (
+                {!aiData && !analyzing && analysisTrace.length === 0 && (
                   <div className="text-center py-20 text-slate-500 bg-slate-900/30 rounded-3xl border border-slate-800/50 border-dashed">
                     <Cpu className="w-12 h-12 mx-auto mb-4 opacity-20" />
                     <p>点击右上角的“一键启动 AI 诊断”开始分析您的持仓</p>
@@ -817,6 +1016,148 @@ export default function App() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function AgentTraceIcon({ entry }: { entry: AgentTraceEntry }) {
+  if (entry.step === 'research_plan') return <LineChart className="w-4 h-4" />;
+  if (entry.step === 'observation_reflection') return <MessageSquare className="w-4 h-4" />;
+  if (entry.step === 'llm_turn' || entry.step === 'llm_decision') return <MessageSquare className="w-4 h-4" />;
+  if (entry.step === 'tool_call') return <Wrench className="w-4 h-4" />;
+  if (entry.step === 'tool_observation') return <Database className="w-4 h-4" />;
+  if (entry.step === 'final_report' || entry.step === 'done') return <FileText className="w-4 h-4" />;
+  if (entry.step === 'error') return <AlertTriangle className="w-4 h-4" />;
+  return <Activity className="w-4 h-4" />;
+}
+
+function TraceDetailBlock({ title, icon, children }: { title: string, icon: ReactNode, children: ReactNode }) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-900/50 overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-slate-800 flex items-center gap-2 text-sm font-bold text-slate-200">
+        <span className="text-indigo-300">{icon}</span>
+        {title}
+      </div>
+      <div className="p-4">{children}</div>
+    </div>
+  );
+}
+
+function TraceJson({ value }: { value: unknown }) {
+  const text = formatJson(value);
+  if (!text) return <div className="text-sm text-slate-500">无内容</div>;
+  return (
+    <pre className="max-h-[300px] overflow-auto custom-scrollbar whitespace-pre-wrap break-words rounded-lg bg-slate-950/80 border border-slate-800 p-3 text-xs leading-relaxed text-slate-300">
+      {text}
+    </pre>
+  );
+}
+
+function AgentTraceDetail({ entry }: { entry: AgentTraceEntry | null }) {
+  if (!entry) {
+    return (
+      <div className="h-full min-h-[300px] flex flex-col items-center justify-center text-slate-600">
+        <Cpu className="w-10 h-10 mb-3 opacity-30" />
+        <p className="text-sm">等待 Agent 事件</p>
+      </div>
+    );
+  }
+
+  const payload = entry.payload || {};
+  const observation = payload.observation;
+  const rawText = typeof payload.raw_text === 'string' ? payload.raw_text : '';
+  const reasoningSummary = textValue(payload.reasoning_summary);
+  const missingCapabilities = Array.isArray(payload.missing_capabilities) ? payload.missing_capabilities : [];
+  const hasRawText = rawText.trim().length > 0;
+  const hasParsed = payload.parsed !== undefined && payload.parsed !== null && payload.parsed !== '';
+  const hasArguments = payload.arguments !== undefined && payload.arguments !== null && payload.arguments !== '';
+  const hasObservation = observation !== undefined && observation !== null && observation !== '';
+  const hasResearchPlan = payload.research_plan !== undefined && payload.research_plan !== null && payload.research_plan !== '';
+  const hasThinkingTrace = payload.thinking_trace !== undefined && payload.thinking_trace !== null && payload.thinking_trace !== '';
+  const hasObservationReflection = payload.observation_reflection !== undefined && payload.observation_reflection !== null && payload.observation_reflection !== '';
+
+  return (
+    <div className="p-4 md:p-5 space-y-4">
+      <div className="flex flex-col md:flex-row md:items-start justify-between gap-3 border-b border-slate-800 pb-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-slate-100 font-bold">
+            <span className={`rounded-lg border p-1.5 ${TRACE_TONE_CLASS[entry.tone]}`}>
+              <AgentTraceIcon entry={entry} />
+            </span>
+            <span>{entry.title}</span>
+          </div>
+          {entry.subtitle && <p className="mt-2 text-sm leading-relaxed text-slate-400">{entry.subtitle}</p>}
+        </div>
+        <div className="shrink-0 text-xs font-mono text-slate-500">
+          {entry.turn ? `turn ${entry.turn} · ` : ''}{entry.time}
+        </div>
+      </div>
+
+      {reasoningSummary && (
+        <TraceDetailBlock title="决策依据摘要" icon={<MessageSquare className="w-4 h-4" />}>
+          <p className="text-sm leading-relaxed text-slate-300">{reasoningSummary}</p>
+        </TraceDetailBlock>
+      )}
+
+      {hasResearchPlan && (
+        <TraceDetailBlock title="研究计划" icon={<LineChart className="w-4 h-4" />}>
+          <TraceJson value={payload.research_plan} />
+        </TraceDetailBlock>
+      )}
+
+      {hasThinkingTrace && (
+        <TraceDetailBlock title="可审计思考轨迹" icon={<Braces className="w-4 h-4" />}>
+          <TraceJson value={payload.thinking_trace} />
+        </TraceDetailBlock>
+      )}
+
+      {hasObservationReflection && (
+        <TraceDetailBlock title="工具结果反思" icon={<MessageSquare className="w-4 h-4" />}>
+          <TraceJson value={payload.observation_reflection} />
+        </TraceDetailBlock>
+      )}
+
+      {missingCapabilities.length > 0 && (
+        <TraceDetailBlock title="当前缺失能力" icon={<AlertTriangle className="w-4 h-4" />}>
+          <div className="space-y-2">
+            {missingCapabilities.map((item, index) => (
+              <div key={`${String(item)}-${index}`} className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+                {String(item)}
+              </div>
+            ))}
+          </div>
+        </TraceDetailBlock>
+      )}
+
+      {hasRawText && (
+        <TraceDetailBlock title="LLM 可见输出" icon={<FileText className="w-4 h-4" />}>
+          <TraceJson value={rawText} />
+        </TraceDetailBlock>
+      )}
+
+      {hasParsed && (
+        <TraceDetailBlock title="解析后的 LLM 决策" icon={<Braces className="w-4 h-4" />}>
+          <TraceJson value={payload.parsed} />
+        </TraceDetailBlock>
+      )}
+
+      {hasArguments && (
+        <TraceDetailBlock title="工具入参" icon={<Wrench className="w-4 h-4" />}>
+          <TraceJson value={payload.arguments} />
+        </TraceDetailBlock>
+      )}
+
+      {hasObservation && (
+        <TraceDetailBlock title="工具返回内容" icon={<Database className="w-4 h-4" />}>
+          <TraceJson value={observation} />
+        </TraceDetailBlock>
+      )}
+
+      {!hasRawText && !hasParsed && !hasArguments && !hasObservation && !hasResearchPlan && !hasThinkingTrace && !hasObservationReflection && missingCapabilities.length === 0 && (
+        <TraceDetailBlock title="事件详情" icon={<Braces className="w-4 h-4" />}>
+          <TraceJson value={traceDisplayPayload(payload)} />
+        </TraceDetailBlock>
+      )}
     </div>
   );
 }
