@@ -428,20 +428,20 @@ export default function App() {
   const selectedTrace = analysisTrace.find(item => item.id === selectedTraceId) || analysisTrace[analysisTrace.length - 1] || null;
 
   return (
-    <div className="min-h-screen bg-slate-950 p-4 sm:p-6 md:p-8 xl:p-12 text-slate-100 font-sans selection:bg-indigo-500/30">
+    <div className="min-h-screen bg-[#0B1120] p-4 sm:p-6 md:p-8 xl:p-12 text-slate-100 font-sans selection:bg-amber-500/30">
       <div className="max-w-7xl mx-auto space-y-10">
         
         {/* Header Area */}
-        <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 pb-6 border-b border-slate-800/60">
+        <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 pb-6 border-b border-white/5">
           <div className="space-y-2">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-xs font-semibold uppercase tracking-wider mb-2">
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-semibold uppercase tracking-wider mb-2">
               <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-500"></span>
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
               </span>
               System Active
             </div>
-            <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight bg-gradient-to-br from-white via-indigo-100 to-indigo-400 bg-clip-text text-transparent flex items-center gap-3">
+            <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight bg-gradient-to-br from-white via-amber-200 to-amber-500 bg-clip-text text-transparent flex items-center gap-3">
               AI 投资驾驶舱
             </h1>
             <p className="text-slate-400 text-sm md:text-base max-w-xl leading-relaxed">
@@ -451,8 +451,8 @@ export default function App() {
           
           <div className="flex flex-col gap-4">
             {/* Model Selector UI */}
-            <div className="flex items-center gap-3 bg-slate-900/50 border border-slate-800 p-2 pl-4 rounded-2xl">
-              <Box className="w-4 h-4 text-indigo-400" />
+            <div className="flex items-center gap-3 bg-slate-900/40 backdrop-blur-md border border-white/5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] p-2 pl-4 rounded-[1.25rem]">
+              <Box className="w-4 h-4 text-violet-400" />
               <select 
                 value={selectedModel}
                 onChange={(e) => setSelectedModel(e.target.value)}
@@ -460,7 +460,7 @@ export default function App() {
                 className="bg-transparent text-sm font-semibold text-slate-200 outline-none cursor-pointer pr-4"
               >
                 {MODELS.map(m => (
-                  <option key={m.id} value={m.id} className="bg-slate-900 text-slate-200">
+                  <option key={m.id} value={m.id} className="bg-[#0B1120] text-slate-200">
                     {m.name}
                   </option>
                 ))}
@@ -470,7 +470,7 @@ export default function App() {
             <button 
               onClick={() => handleAnalyze(null)}
               disabled={analyzing || loading}
-              className="group relative flex items-center gap-3 bg-gradient-to-b from-indigo-500 to-indigo-600 hover:from-indigo-400 hover:to-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed px-8 py-3.5 rounded-2xl font-bold transition-all shadow-[0_0_40px_-10px_rgba(99,102,241,0.4)] hover:shadow-[0_0_60px_-15px_rgba(99,102,241,0.6)] hover:-translate-y-0.5 overflow-hidden"
+              className="group relative flex items-center justify-center gap-3 bg-gradient-to-b from-violet-500 to-violet-600 hover:from-violet-400 hover:to-violet-500 disabled:opacity-50 disabled:cursor-not-allowed px-8 py-3.5 rounded-[1.25rem] font-bold transition-all shadow-[0_0_40px_-10px_rgba(139,92,246,0.4)] hover:shadow-[0_0_60px_-15px_rgba(139,92,246,0.6)] hover:-translate-y-0.5 overflow-hidden border border-violet-400/30"
             >
               <div className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300 ease-out"></div>
               {analyzing ? <RefreshCw className="animate-spin w-5 h-5 relative z-10" /> : <Cpu className="w-5 h-5 relative z-10" />}
@@ -481,22 +481,22 @@ export default function App() {
 
         {/* Navigation Tabs */}
         {!loading && data?.holdings && (
-          <div className="flex space-x-2 bg-slate-900/50 p-1.5 rounded-2xl border border-slate-800 w-fit shadow-inner">
+          <div className="flex space-x-2 bg-slate-900/40 backdrop-blur-md p-1.5 rounded-[1.25rem] border border-white/5 w-fit shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
             <button 
               onClick={() => setActiveTab('overview')} 
-              className={`px-6 py-2.5 rounded-xl text-sm font-bold transition-all ${activeTab === 'overview' ? 'bg-indigo-500 shadow-md shadow-indigo-500/20 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
+              className={`px-6 py-2.5 rounded-xl text-sm font-bold transition-all ${activeTab === 'overview' ? 'bg-amber-500 shadow-lg shadow-amber-500/20 text-slate-900' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
             >
               资产总览
             </button>
             <button 
               onClick={() => setActiveTab('profile')} 
-              className={`px-6 py-2.5 rounded-xl text-sm font-bold transition-all ${activeTab === 'profile' ? 'bg-cyan-500 shadow-md shadow-cyan-500/20 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
+              className={`px-6 py-2.5 rounded-xl text-sm font-bold transition-all ${activeTab === 'profile' ? 'bg-cyan-500 shadow-lg shadow-cyan-500/20 text-slate-900' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
             >
               组合画像
             </button>
             <button 
               onClick={() => setActiveTab('analysis')} 
-              className={`px-6 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'analysis' ? 'bg-purple-500 shadow-md shadow-purple-500/20 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
+              className={`px-6 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center gap-2 ${activeTab === 'analysis' ? 'bg-violet-500 shadow-lg shadow-violet-500/20 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
             >
               AI 诊断
               {(aiData || analyzing) && <span className={`w-2 h-2 rounded-full ${analyzing ? 'bg-amber-400 animate-pulse' : 'bg-purple-300'}`}></span>}
@@ -506,7 +506,7 @@ export default function App() {
 
         {/* Analysis Progress Logs */}
         {activeTab === 'analysis' && (analyzing || analysisTrace.length > 0) && (
-          <section className="bg-slate-900/80 backdrop-blur-2xl border border-indigo-500/30 rounded-3xl p-6 shadow-[0_0_50px_-12px_rgba(99,102,241,0.3)] animate-in fade-in zoom-in duration-500 relative overflow-hidden group/logs">
+          <section className="glass-card p-6 shadow-[0_0_50px_-12px_rgba(139,92,246,0.15)] animate-in fade-in zoom-in duration-500 relative overflow-hidden group/logs border-violet-500/20">
             <div className="absolute top-4 right-4 z-10">
                {analysisTrace.length > 0 && !analyzing && (
                  <button 
@@ -634,7 +634,7 @@ export default function App() {
             {activeTab === 'overview' && (
             <section className="grid grid-cols-1 md:grid-cols-12 gap-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
               {/* Total Value */}
-              <div className="md:col-span-4 bg-slate-900/50 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 relative overflow-hidden group">
+              <div className="md:col-span-4 glass-card p-6 relative overflow-hidden group">
                 <div className="absolute -right-10 -top-10 w-40 h-40 bg-blue-500/10 rounded-full blur-3xl group-hover:bg-blue-500/20 transition-colors duration-500"></div>
                 <div className="flex justify-between items-start mb-6">
                   <div className="p-3 bg-blue-500/10 rounded-2xl text-blue-400"><Wallet className="w-6 h-6"/></div>
@@ -655,7 +655,7 @@ export default function App() {
               </div>
 
               {/* Total Profit (Split) */}
-              <div className="md:col-span-4 bg-slate-900/50 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 relative overflow-hidden group">
+              <div className="md:col-span-4 glass-card p-6 relative overflow-hidden group">
                 <div className="absolute -right-10 -top-10 w-40 h-40 bg-slate-800/20 rounded-full blur-3xl"></div>
                 <div className="flex justify-between items-start mb-4">
                   <div className="p-3 bg-slate-800/50 rounded-2xl text-slate-400">
@@ -688,7 +688,7 @@ export default function App() {
               </div>
 
               {/* Asset Allocation Chart */}
-              <div className="md:col-span-4 bg-slate-900/50 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 flex flex-col relative overflow-hidden">
+              <div className="md:col-span-4 glass-card p-6 flex flex-col relative overflow-hidden">
                 <div className="flex items-center gap-2 mb-2 z-10">
                   <PieChartIcon className="w-5 h-5 text-slate-400"/>
                   <h3 className="text-slate-400 font-medium text-sm">资产分布图</h3>
@@ -720,8 +720,8 @@ export default function App() {
             {activeTab === 'profile' && (
               <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
             {profileLoading ? (
-              <section className="bg-slate-900/50 border border-slate-800 rounded-3xl p-8 flex items-center gap-4">
-                <RefreshCw className="w-5 h-5 animate-spin text-indigo-400" />
+              <section className="glass-card p-8 flex items-center gap-4">
+                <RefreshCw className="w-5 h-5 animate-spin text-amber-400" />
                 <div>
                   <h2 className="text-lg font-bold text-slate-100">正在生成组合画像</h2>
                   <p className="text-sm text-slate-500">默认只读取已有分类配置和缓存，不会调用分类 LLM。</p>
@@ -764,13 +764,13 @@ export default function App() {
                 )}
             {aiData && (
               <section className="relative group">
-                <div className="absolute -inset-1 bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 rounded-[2rem] blur opacity-25 group-hover:opacity-40 transition duration-1000 group-hover:duration-200"></div>
-                <div className="relative bg-slate-900 border border-slate-700/50 rounded-[2rem] p-6 md:p-10 shadow-2xl">
+                <div className="absolute -inset-1 bg-gradient-to-r from-violet-500 via-purple-500 to-amber-500 rounded-[2.5rem] blur opacity-20 group-hover:opacity-30 transition duration-1000 group-hover:duration-200"></div>
+                <div className="relative glass-card p-6 md:p-10 !rounded-[2rem]">
                   
                   {/* AI Top Summary */}
-                  <div className="flex flex-col lg:flex-row justify-between items-start gap-8 mb-10 border-b border-slate-800/80 pb-10">
+                  <div className="flex flex-col lg:flex-row justify-between items-start gap-8 mb-10 border-b border-white/5 pb-10">
                     <div className="flex-1 space-y-4">
-                      <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 text-sm font-semibold">
+                      <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-violet-500/10 border border-violet-500/30 text-violet-300 text-sm font-semibold">
                         <Cpu className="w-4 h-4"/> 深度诊断完成
                       </div>
                       <h2 className="text-2xl md:text-3xl font-bold text-slate-100 leading-snug">

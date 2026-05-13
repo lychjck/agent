@@ -1,14 +1,14 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
 }
 
 body {
-  @apply bg-slate-900 text-slate-50 antialiased;
+  @apply bg-[#0B1120] text-slate-50 antialiased;
 }
 
-/* 玻璃拟物卡片效果 */
+/* 玻璃拟物卡片效果 (Pro Max 增强版) */
 .glass-card {
-  @apply bg-slate-800/60 backdrop-blur-md border border-slate-700/50 rounded-2xl shadow-xl;
+  @apply bg-slate-900/40 backdrop-blur-2xl border border-white/5 rounded-[2rem] shadow-[0_8px_32px_0_rgba(0,0,0,0.36),inset_0_1px_0_rgba(255,255,255,0.1)];
 }
