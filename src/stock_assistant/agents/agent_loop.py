@@ -368,6 +368,75 @@ async def run_tool_agent_events(
                 parsed=decision_payload,
                 observation_reflection=last_reflection,
             )
+            missing_codes = missing_technical_codes(workspace, goal)
+            if missing_codes:
+                agent_log(
+                    run_id,
+                    f"coverage_gate_after_reflection missing_technical={len(missing_codes)}",
+                    turn=turn,
+                    level="WARN",
+                )
+                yield tool_agent_event(
+                    "coverage_gate",
+                    f"仍有 {len(missing_codes)} 个标的缺少技术指标，后端自动补查",
+                    run_id=run_id,
+                    turn=turn,
+                    missing_codes=missing_codes,
+                )
+                for index, code_chunk in enumerate(chunked(missing_codes, 20), start=1):
+                    tool_call_count += 1
+                    if tool_call_count > max_calls:
+                        message = f"达到 max_tool_calls={max_calls}，Agent 未完成"
+                        trace.write("error", {"turn": turn, "error": message})
+                        agent_log(run_id, message, turn=turn, level="ERROR")
+                        yield tool_agent_event("error", message, run_id=run_id, error=message)
+                        return
+                    call = LlmToolCall(
+                        id=f"auto_coverage_{turn}_{index:02d}",
+                        name="get_holding_technical",
+                        arguments={"codes": code_chunk},
+                    )
+                    trace.write("tool_call", {"turn": turn, "call": call.model_dump(), "reason": "coverage_gate"})
+                    yield tool_agent_event(
+                        "tool_call",
+                        f"补查缺失技术指标：{len(code_chunk)} 个标的",
+                        run_id=run_id,
+                        turn=turn,
+                        tool=call.name,
+                        arguments=call.arguments,
+                        auto=True,
+                    )
+                    started = time.monotonic()
+                    observation = execute_tool_call(call, registry, workspace)
+                    elapsed = time.monotonic() - started
+                    trace.write("tool_observation", {"turn": turn, "observation": observation.model_dump()})
+                    agent_log(
+                        run_id,
+                        (
+                            f"coverage_observation ok={observation.ok} elapsed={elapsed:.2f}s "
+                            f"summary={observation.summary or observation.message}"
+                        ),
+                        turn=turn,
+                        level="INFO" if observation.ok else "WARN",
+                    )
+                    yield tool_agent_event(
+                        "tool_observation",
+                        observation.summary or observation.message,
+                        run_id=run_id,
+                        turn=turn,
+                        tool=call.name,
+                        ok=observation.ok,
+                        summary=observation.summary,
+                        error_type=observation.error_type,
+                        message=observation.message,
+                        observation=observation.model_dump(),
+                        auto=True,
+                    )
+                    messages.append(tool_observation_message(call, observation))
+                reflection_required = True
+                messages.append({"role": "user", "content": build_coverage_prompt(missing_codes)})
+                messages.append({"role": "user", "content": build_reflection_prompt()})
+                continue
             messages.append({"role": "user", "content": build_after_reflection_prompt(last_reflection)})
             continue
 

@@ -108,7 +108,10 @@ def urllib_llm(
     if reasoning_effort:
         body["reasoning_effort"] = reasoning_effort
     if request_kwargs:
-        body.update(request_kwargs)
+        extra_body = request_kwargs.get("extra_body")
+        body.update({key: value for key, value in request_kwargs.items() if key != "extra_body"})
+        if isinstance(extra_body, dict):
+            body.update(extra_body)
     if disable_thinking and ("localhost" in base_url or "127.0.0.1" in base_url or "10." in base_url):
         body["enable_thinking"] = False
         body["chat_template_kwargs"] = {"enable_thinking": False}

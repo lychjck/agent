@@ -226,10 +226,11 @@ export default function App() {
   const [analysisTrace, setAnalysisTrace] = useState<AgentTraceEntry[]>([]);
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [currentStep, setCurrentStep] = useState(0);
-  const [selectedModel, setSelectedModel] = useState('google/gemma-4-26b-a4b');
+  const [selectedModel, setSelectedModel] = useState('deepseek-v4-pro');
   const [technicalResults, setTechnicalResults] = useState<any[] | null>(null);
   
   const MODELS = [
+    { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', provider: 'EasyRouter' },
     { id: 'google/gemma-4-26b-a4b', name: 'Gemma 4 26B A4B (本地)', provider: 'Local' },
     { id: 'inclusionAI/Ling-2.6-1T', name: 'Ling-2.6-1T (推荐)', provider: 'ModelScope' },
     { id: 'ZhipuAI/GLM-5.1', name: 'GLM-5.1', provider: 'ModelScope' },

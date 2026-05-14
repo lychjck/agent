@@ -238,6 +238,39 @@ class TestAgentLlm(unittest.TestCase):
         self.assertEqual(report["action_items"][0]["type"], "watch")
         self.assertEqual(report["action_items"][0]["target"], "沪深300ETF")
 
+    def test_parse_agent_report_aligns_contradictory_action_copy_with_rule(self):
+        context = self.context()
+        context["holdings"][0]["technical"]["rule_action"] = "减仓/暂停加仓"
+        context["holdings"][0]["technical"]["rule_reason"] = "收盘价低于 MA60，中期趋势偏弱"
+        payload = {
+            "summary": {"brief": "组合需要继续观察。"},
+            "diagnosis": [],
+            "holding_analysis": [
+                {
+                    "target_code": "510300",
+                    "target_name": "沪深300ETF",
+                    "action_type": "watch",
+                    "title": "持有观察，等待修复",
+                    "reason": "建议持有等待均线修复。",
+                    "evidence_refs": ["holding:510300:technical"],
+                }
+            ],
+            "action_reviews": [],
+        }
+
+        report = parse_agent_report(
+            json.dumps(payload, ensure_ascii=False),
+            [],
+            context["evidence_index"],
+            self.config,
+            holdings=context["holdings"],
+        )
+
+        item = report["holding_analysis"][0]
+        self.assertEqual(item["action_type"], "reduce")
+        self.assertEqual(item["title"], "减仓/暂停加仓")
+        self.assertIn("收盘价低于 MA60", item["reason"])
+
     def test_parse_agent_report_accepts_singular_evidence_ref_alias(self):
         context = self.context()
         payload = {
@@ -416,6 +449,14 @@ class TestAgentLlm(unittest.TestCase):
         config["llm"]["structured_output"] = "json_object"
         config["llm"]["supports_response_format"] = False
         self.assertEqual(llm_structured_kwargs(config), {"response_format": {"type": "json_object"}})
+
+    def test_llm_structured_kwargs_can_disable_thinking(self):
+        config = deepcopy(self.config)
+        config["llm"]["structured_output"] = "auto"
+        config["llm"]["supports_response_format"] = False
+        config["llm"]["disable_thinking"] = True
+
+        self.assertEqual(llm_structured_kwargs(config), {"extra_body": {"thinking": {"type": "disabled"}}})
 
 
 if __name__ == "__main__":

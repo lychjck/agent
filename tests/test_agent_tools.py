@@ -43,6 +43,17 @@ class TestAgentTools(unittest.TestCase):
         self.assertEqual(set(result["holdings"][0]), {"code", "name", "weight_pct", "profit_pct"})
         self.assertNotIn("source_row", result["holdings"][0])
 
+    def test_get_portfolio_profile_returns_compact_structured_payload(self):
+        workspace = AgentWorkspace(self.config, holdings=self.holdings)
+        tool = build_agent_tool_registry(self.config)["get_portfolio_profile"]
+        result = tool.handler(tool.args_model(include=["asset_class", "sector", "concentration"]), workspace)
+
+        self.assertIn("portfolio", result)
+        self.assertIn("observations", result)
+        self.assertIn("by_asset_class", result["portfolio"])
+        self.assertIn("top_positions", result["portfolio"])
+        self.assertNotIn("positions", result["portfolio"])
+
     def test_get_holding_technical_rejects_unknown_code(self):
         workspace = AgentWorkspace(self.config, holdings=self.holdings)
         tool = build_agent_tool_registry(self.config)["get_holding_technical"]

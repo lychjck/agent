@@ -478,14 +478,18 @@ def build_agent_report_messages(context: dict[str, Any]) -> list[dict[str, str]]
 
 def llm_structured_kwargs(config: dict[str, Any]) -> dict[str, Any]:
     llm = config.get("llm", {})
+    kwargs: dict[str, Any] = {}
+    if config_bool(llm.get("disable_thinking", False)):
+        kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
     mode = str(llm.get("structured_output", "auto")).strip().lower()
     if mode == "none":
-        return {}
+        return kwargs
     if mode == "json_object":
-        return {"response_format": {"type": "json_object"}}
+        kwargs["response_format"] = {"type": "json_object"}
+        return kwargs
     if mode == "auto" and config_bool(llm.get("supports_response_format", False)):
-        return {"response_format": {"type": "json_object"}}
-    return {}
+        kwargs["response_format"] = {"type": "json_object"}
+    return kwargs
 
 
 def load_agent_report_json(text: str) -> dict[str, Any]:
@@ -580,6 +584,53 @@ def deterministic_holding_action_type(holding: dict[str, Any] | None) -> str:
     technical = holding.get("technical", {}) if isinstance(holding.get("technical"), dict) else {}
     classification = holding.get("classification", {}) if isinstance(holding.get("classification"), dict) else {}
     return holding_action_type_from_rule(str(technical.get("rule_action", "") or ""), classification)
+
+
+def action_copy_for_rule(action_type: str, holding: dict[str, Any] | None) -> tuple[str, str]:
+    technical = holding.get("technical", {}) if isinstance(holding, dict) and isinstance(holding.get("technical"), dict) else {}
+    rule_action = str(technical.get("rule_action", "") or "").strip()
+    rule_reason = str(technical.get("rule_reason", "") or "").strip()
+    title_by_type = {
+        "buy": "可分批加仓",
+        "reduce": "减仓或暂停加仓",
+        "hold": "持有观察",
+        "watch": "继续观察",
+        "rebalance": "再平衡",
+        "classify_required": "需要先补充分信息",
+    }
+    title = rule_action or title_by_type.get(action_type, "继续观察")
+    return title, rule_reason
+
+
+def text_contradicts_action(action_type: str, title: str, reason: str) -> bool:
+    text = f"{title} {reason}"
+    if action_type == "reduce":
+        return any(token in text for token in ("建议持有", "继续持有", "持有观察", "可分批加仓", "加仓"))
+    if action_type == "buy":
+        return any(token in text for token in ("减仓", "暂停加仓", "止损", "赎回"))
+    if action_type == "hold":
+        return any(token in text for token in ("建议减仓", "止损", "赎回", "可分批加仓", "建议加仓"))
+    if action_type == "classify_required":
+        return any(token in text for token in ("建议减仓", "建议加仓", "止损", "赎回"))
+    return False
+
+
+def normalize_holding_action_copy(item: dict[str, Any], holding: dict[str, Any] | None) -> dict[str, Any]:
+    action_type = str(item.get("action_type", "watch"))
+    title = str(item.get("title", "") or "")
+    reason = str(item.get("reason", "") or "")
+    if not text_contradicts_action(action_type, title, reason):
+        return item
+    rule_title, rule_reason = action_copy_for_rule(action_type, holding)
+    original_reason = reason.strip()
+    item["title"] = rule_title
+    if rule_reason:
+        item["reason"] = rule_reason
+        if original_reason and original_reason != rule_reason:
+            item["reason"] = f"{rule_reason} 原始模型说明：{original_reason}"
+    else:
+        item["reason"] = original_reason or "动作类型已按规则信号修正。"
+    return item
 
 
 def fallback_holding_analysis_from_context(holdings: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -708,6 +759,7 @@ def validate_agent_report(
             item["target_name"] = str(holding_by_code[code].get("name", ""))
         if not item.get("title"):
             item["title"] = "持有观察"
+        item = normalize_holding_action_copy(item, holding_by_code.get(code))
         item["evidence_refs"] = filter_evidence_refs(item.get("evidence_refs", []), evidence_index)
         if code:
             seen_holding_codes.add(code)

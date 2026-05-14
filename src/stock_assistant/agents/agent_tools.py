@@ -120,14 +120,34 @@ def handle_get_current_holdings(args: BaseModel, workspace: AgentWorkspace) -> d
 def handle_get_portfolio_profile(args: BaseModel, workspace: AgentWorkspace) -> dict[str, Any]:
     typed = args if isinstance(args, GetPortfolioProfileArgs) else GetPortfolioProfileArgs.model_validate(args)
     profile = workspace.ensure_portfolio_profile()
+    requested = {str(item).strip() for item in typed.include if str(item).strip()}
+    include_positions = not requested or any(item in requested for item in {"positions", "top_positions"})
+    portfolio = {
+        "total_value": profile.get("total_value"),
+        "position_count": profile.get("position_count"),
+        "by_asset_class": profile.get("by_asset_class", {}),
+        "by_sector": profile.get("by_sector", {}),
+        "by_theme": profile.get("by_theme", {}),
+        "by_strategy": profile.get("by_strategy", {}),
+        "by_region": profile.get("by_region", {}),
+        "by_asset_type": profile.get("by_asset_type", {}),
+        "unknown_classification_pct": profile.get("unknown_classification_pct"),
+        "low_confidence_classification_pct": profile.get("low_confidence_classification_pct"),
+        "top_positions": profile.get("top_positions", []),
+    }
+    if include_positions:
+        portfolio["positions"] = profile.get("positions", [])
     payload = {
-        "portfolio": profile,
+        "portfolio": portfolio,
         "observations": workspace.observations,
     }
     if typed.include:
-        allowed = set(typed.include) | {"observations"}
-        payload = {key: value for key, value in payload.items() if key in allowed or key == "portfolio"}
-    payload["summary"] = f"组合画像包含 {profile.get('position_count', 0)} 个标的"
+        allowed = requested | {"observations", "portfolio"}
+        payload = {key: value for key, value in payload.items() if key in allowed}
+    payload["summary"] = (
+        f"组合画像包含 {profile.get('position_count', 0)} 个标的，"
+        f"资产大类 {len(profile.get('by_asset_class', {}) or {})} 类"
+    )
     return payload
 
 
