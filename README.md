@@ -74,6 +74,73 @@ api_key_env = "EASYROUTER_API_KEY"
 stream = false
 ```
 
+## MCP Server
+
+本项目可以把内部只读 Agent 工具暴露为 MCP server，方便 Qclaw/OpenClaw 等 MCP client 调用外部模型分析。
+
+本地调试可以用 stdio：
+
+```bash
+cd /Users/qiaoshi/code/stock
+uv run python -m stock_assistant.mcp_server --config config.toml
+```
+
+如果项目已安装为命令行入口，也可以运行：
+
+```bash
+stock-assistant-mcp --config /Users/qiaoshi/code/stock/config.toml
+```
+
+远程接入 Qclaw/OpenClaw 时，部署 HTTP 模式，并通过反向代理提供 HTTPS：
+
+```bash
+cd /Users/qiaoshi/code/stock
+export STOCK_MCP_TOKEN="换成一段长随机 token"
+uv run python -m stock_assistant.mcp_server \
+  --transport http \
+  --host 127.0.0.1 \
+  --port 8766 \
+  --config /Users/qiaoshi/code/stock/config.toml
+```
+
+反向代理把公网 HTTPS 的 `/mcp` 转发到 `http://127.0.0.1:8766/mcp`。Qclaw/OpenClaw 配置示例：
+
+```json
+{
+  "mcpServers": {
+    "stock-assistant": {
+      "url": "https://你的域名/mcp",
+      "transport": "streamable-http",
+      "headers": {
+        "Authorization": "Bearer 换成同一个 token"
+      }
+    }
+  }
+}
+```
+
+如果 MCP client 只支持本地命令模式，可以继续用 stdio 配置：
+
+```json
+{
+  "mcpServers": {
+    "stock-assistant": {
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "-m",
+        "stock_assistant.mcp_server",
+        "--config",
+        "/Users/qiaoshi/code/stock/config.toml"
+      ]
+    }
+  }
+}
+```
+
+第一批工具都带 `stock_` 前缀，且只暴露只读能力，例如 `stock_get_current_holdings`、`stock_get_portfolio_profile`、`stock_get_holding_technical`。工具调用复用后端现有参数校验、只读限制、敏感字段过滤和结果截断。
+
 首次运行建议保留 `ledger.mode = "manual"`：程序会打开浏览器，你登录投资账本并导出持仓文件，脚本会在 `~/Downloads` 和 `./downloads` 里等待新的 `csv/xlsx` 文件。
 
 如果已经有持仓文件，可以直接分析：
