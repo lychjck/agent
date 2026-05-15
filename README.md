@@ -141,6 +141,24 @@ uv run python -m stock_assistant.mcp_server \
 
 第一批工具都带 `stock_` 前缀，且只暴露只读能力，例如 `stock_get_current_holdings`、`stock_get_portfolio_profile`、`stock_get_holding_technical`。工具调用复用后端现有参数校验、只读限制、敏感字段过滤和结果截断。
 
+## Agent Skills
+
+项目支持安装本地 Agent skill。skill 是一个包含 `SKILL.md` 的目录，默认安装到：
+
+```text
+/Users/liyanran/github/stock/data/skills/
+```
+
+从互联网上安装 raw `SKILL.md` 或 GitHub blob URL：
+
+```bash
+uv run python -m stock_assistant.cli --config config.toml skills install https://example.com/SKILL.md
+uv run python -m stock_assistant.cli --config config.toml skills list
+uv run python -m stock_assistant.cli --config config.toml skills show skill-name
+```
+
+启用后，tool-agent 会额外获得 `list_skills` 和 `read_skill` 两个只读工具。Agent 可以先发现已安装 skill，再读取对应 `SKILL.md`，按你的自定义流程完成分析；它不会通过 skill 工具直接联网、写文件或执行命令。
+
 首次运行建议保留 `ledger.mode = "manual"`：程序会打开浏览器，你登录投资账本并导出持仓文件，脚本会在 `~/Downloads` 和 `./downloads` 里等待新的 `csv/xlsx` 文件。
 
 如果已经有持仓文件，可以直接分析：

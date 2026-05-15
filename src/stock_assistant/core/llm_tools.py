@@ -27,6 +27,10 @@ class LlmToolStep(BaseModel):
 
 def strip_json_markdown(text: str) -> str:
     clean = text.strip()
+    if clean.startswith("<|channel>"):
+        _, _, clean = clean.partition("\n")
+        clean = clean.strip()
+    clean = clean.replace("<channel|>", "").strip()
     if clean.startswith("```json"):
         clean = clean[7:].strip()
     elif clean.startswith("```"):

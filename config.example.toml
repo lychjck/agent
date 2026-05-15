@@ -119,6 +119,14 @@ save_traces = true
 trace_dir = "data/state/agent_traces"
 allow_external_search_tools = false
 
+[skills]
+enabled = true
+install_dir = "data/skills"
+roots = []
+max_skill_chars = 20000
+install_timeout_seconds = 30
+allow_url_install = true
+
 [llm]
 enabled = true
 client = "openai"

@@ -78,6 +78,16 @@ class TestLlmTools(unittest.TestCase):
         self.assertEqual(step.reasoning_summary, "证据足够。")
         self.assertEqual(step.final_report["summary"]["brief"], "ok")
 
+    def test_parse_strips_channel_markers(self):
+        step = parse_llm_tool_step(
+            '<|channel>thought\n<channel|>{"type":"observation_reflection",'
+            '"reasoning_summary":"已反思",'
+            '"observation_reflection":{"satisfied_needs":[],"unsatisfied_needs":[],"next_action":"final_report"}}'
+        )
+
+        self.assertEqual(step.type, "observation_reflection")
+        self.assertEqual(step.reasoning_summary, "已反思")
+
     def test_infers_single_tool_call(self):
         step = parse_llm_tool_step(json.dumps({
             "tool_call": {

@@ -1,3 +1,4 @@
+import re
 from collections.abc import Callable
 from typing import Any, Literal
 
@@ -6,6 +7,16 @@ from pydantic import BaseModel, ConfigDict, Field
 from stock_assistant.agents.agent_llm import classification_record, technical_record
 from stock_assistant.agents.agent_workspace import AgentWorkspace
 from stock_assistant.core.models import holding_to_dict
+from stock_assistant.core.skills import (
+    fetch_url_bytes,
+    list_installed_skills,
+    read_skill_content,
+    read_skill_file_content,
+    skill_file_paths,
+    strip_html_tags,
+    web_search_results,
+)
+from stock_assistant.core.utils import config_bool
 
 
 ALLOWED_HOLDING_FIELDS = {
@@ -71,6 +82,39 @@ class CompareSnapshotsArgs(BaseModel):
 
 class GenerateCandidateActionsArgs(BaseModel):
     codes: list[str] = Field(default_factory=list, max_length=50)
+
+
+class ListSkillsArgs(BaseModel):
+    query: str = ""
+
+
+class ReadSkillArgs(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class ListSkillFilesArgs(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class ReadSkillFileArgs(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    path: str = Field(min_length=1, max_length=240)
+
+
+class WebFetchArgs(BaseModel):
+    url: str = Field(min_length=1, max_length=1000)
+    max_chars: int = Field(default=8000, ge=500, le=20000)
+
+
+class WebSearchArgs(BaseModel):
+    query: str = Field(min_length=1, max_length=500)
+    engines: list[str] = Field(default_factory=list, max_length=4)
+    max_results: int = Field(default=5, ge=1, le=10)
+
+
+class WebReadArgs(BaseModel):
+    url: str = Field(min_length=1, max_length=1000)
+    max_chars: int = Field(default=12000, ge=1000, le=30000)
 
 
 def holding_tool_record(holding: Any, total_value: float | None, fields: list[str]) -> dict[str, Any]:
@@ -223,8 +267,114 @@ def handle_generate_candidate_actions(args: BaseModel, workspace: AgentWorkspace
     }
 
 
+def handle_list_skills(args: BaseModel, workspace: AgentWorkspace) -> dict[str, Any]:
+    typed = args if isinstance(args, ListSkillsArgs) else ListSkillsArgs.model_validate(args)
+    query = typed.query.strip().lower()
+    records = [record.to_dict() for record in list_installed_skills(workspace.config)]
+    if query:
+        records = [
+            record for record in records
+            if query in record.get("name", "").lower() or query in record.get("description", "").lower()
+        ]
+    return {
+        "count": len(records),
+        "skills": records,
+        "summary": f"返回 {len(records)} 个可用 skill",
+    }
+
+
+def handle_read_skill(args: BaseModel, workspace: AgentWorkspace) -> dict[str, Any]:
+    typed = args if isinstance(args, ReadSkillArgs) else ReadSkillArgs.model_validate(args)
+    return read_skill_content(workspace.config, typed.name)
+
+
+def handle_list_skill_files(args: BaseModel, workspace: AgentWorkspace) -> dict[str, Any]:
+    typed = args if isinstance(args, ListSkillFilesArgs) else ListSkillFilesArgs.model_validate(args)
+    files = skill_file_paths(workspace.config, typed.name)
+    return {
+        "count": len(files),
+        "files": files,
+        "summary": f"返回 {len(files)} 个 skill 文件",
+    }
+
+
+def handle_read_skill_file(args: BaseModel, workspace: AgentWorkspace) -> dict[str, Any]:
+    typed = args if isinstance(args, ReadSkillFileArgs) else ReadSkillFileArgs.model_validate(args)
+    return read_skill_file_content(workspace.config, typed.name, typed.path)
+
+
+def handle_web_fetch(args: BaseModel, workspace: AgentWorkspace) -> dict[str, Any]:
+    typed = args if isinstance(args, WebFetchArgs) else WebFetchArgs.model_validate(args)
+    url = typed.url.strip()
+    if not url.startswith(("http://", "https://")):
+        raise ValueError("web_fetch 只允许 http/https URL")
+    timeout_seconds = int(workspace.config.get("search", {}).get("timeout_seconds", 20) or 20)
+    data, content_type, final_url = fetch_url_bytes(url, timeout_seconds=timeout_seconds)
+    text = data.decode("utf-8", errors="replace")
+    if "html" in content_type:
+        text = strip_html_tags(text)
+    text = text.strip()
+    truncated = len(text) > typed.max_chars
+    return {
+        "url": url,
+        "final_url": final_url,
+        "content_type": content_type,
+        "content": text[:typed.max_chars],
+        "truncated": truncated,
+        "summary": f"抓取 {final_url}，返回 {min(len(text), typed.max_chars)} 字符" + ("（内容已截断）" if truncated else ""),
+    }
+
+
+def default_search_engines(query: str) -> list[str]:
+    if re.search(r"[\u4e00-\u9fff]", query):
+        return ["duckduckgo", "bing_cn"]
+    return ["duckduckgo", "bing"]
+
+
+def handle_web_search(args: BaseModel, workspace: AgentWorkspace) -> dict[str, Any]:
+    typed = args if isinstance(args, WebSearchArgs) else WebSearchArgs.model_validate(args)
+    timeout_seconds = int(workspace.config.get("search", {}).get("timeout_seconds", 20) or 20)
+    engines = typed.engines or default_search_engines(typed.query)
+    results = web_search_results(
+        typed.query,
+        engines,
+        max_results=typed.max_results,
+        timeout_seconds=timeout_seconds,
+    )
+    useful_count = len([item for item in results if item.get("title") != "搜索失败"])
+    return {
+        "query": typed.query,
+        "engines": engines,
+        "count": useful_count,
+        "results": results,
+        "supported_engine_names": ["baidu", "Baidu", "bing_cn", "Bing CN", "bing", "duckduckgo", "google", "sogou", "360"],
+        "summary": f"搜索 {typed.query}，返回 {useful_count} 条结果",
+    }
+
+
+def handle_web_read(args: BaseModel, workspace: AgentWorkspace) -> dict[str, Any]:
+    typed = args if isinstance(args, WebReadArgs) else WebReadArgs.model_validate(args)
+    url = typed.url.strip()
+    if not url.startswith(("http://", "https://")):
+        raise ValueError("web_read 只允许 http/https URL")
+    timeout_seconds = int(workspace.config.get("search", {}).get("timeout_seconds", 20) or 20)
+    data, content_type, final_url = fetch_url_bytes(url, timeout_seconds=timeout_seconds)
+    text = data.decode("utf-8", errors="replace")
+    if "html" in content_type:
+        text = strip_html_tags(text)
+    text = text.strip()
+    truncated = len(text) > typed.max_chars
+    return {
+        "url": url,
+        "final_url": final_url,
+        "content_type": content_type,
+        "content": text[:typed.max_chars],
+        "truncated": truncated,
+        "summary": f"读取 {final_url}，返回 {min(len(text), typed.max_chars)} 字符" + ("（内容已截断）" if truncated else ""),
+    }
+
+
 def build_agent_tool_registry(config: dict[str, Any]) -> dict[str, AgentToolSpec]:
-    _ = config
     tools = [
         AgentToolSpec(
             name="get_current_holdings",
@@ -269,6 +419,73 @@ def build_agent_tool_registry(config: dict[str, Any]) -> dict[str, AgentToolSpec
             handler=handle_generate_candidate_actions,
         ),
     ]
+    if config_bool(config.get("skills", {}).get("enabled", True)):
+        tools.extend([
+            AgentToolSpec(
+                name="list_skills",
+                description=(
+                    "列出已安装的本地 skills。任务可能需要专门方法、流程或用户自定义能力时，"
+                    "先调用它发现可用 skill。"
+                ),
+                args_model=ListSkillsArgs,
+                handler=handle_list_skills,
+                permission="skills:read",
+            ),
+            AgentToolSpec(
+                name="read_skill",
+                description=(
+                    "读取指定 skill 的 SKILL.md 内容，用于按用户安装的 skill 工作。"
+                    "只能读取已安装 skill，不会联网或执行 skill 中的命令。"
+                ),
+                args_model=ReadSkillArgs,
+                handler=handle_read_skill,
+                permission="skills:read",
+            ),
+            AgentToolSpec(
+                name="list_skill_files",
+                description="列出指定 skill 包内的可读配套文件，例如 references、config、metadata。",
+                args_model=ListSkillFilesArgs,
+                handler=handle_list_skill_files,
+                permission="skills:read",
+            ),
+            AgentToolSpec(
+                name="read_skill_file",
+                description="读取指定 skill 包内的配套文本文件。只能读取 skill 目录内的相对路径。",
+                args_model=ReadSkillFileArgs,
+                handler=handle_read_skill_file,
+                permission="skills:read",
+            ),
+        ])
+    if config_bool(config.get("agent", {}).get("allow_external_search_tools", False)):
+        tools.extend([
+            AgentToolSpec(
+                name="web_search",
+                description=(
+                    "用一个或多个搜索引擎执行网页搜索，返回结构化结果 title/url/snippet。"
+                    "优先用它搜索，再用 web_read 打开具体结果页。"
+                ),
+                args_model=WebSearchArgs,
+                handler=handle_web_search,
+                permission="web:read",
+            ),
+            AgentToolSpec(
+                name="web_read",
+                description="读取指定网页并提取正文文本，适合打开 web_search 返回的具体结果页。",
+                args_model=WebReadArgs,
+                handler=handle_web_read,
+                permission="web:read",
+            ),
+            AgentToolSpec(
+                name="web_fetch",
+                description=(
+                    "底层按 URL 抓取网页文本。优先使用 web_search/web_read；"
+                    "仅在需要直接访问特定 URL 时使用。"
+                ),
+                args_model=WebFetchArgs,
+                handler=handle_web_fetch,
+                permission="web:read",
+            ),
+        ])
     return {tool.name: tool for tool in tools}
 
 

@@ -51,6 +51,38 @@ def truncate_payload(value: dict[str, Any], max_chars: int) -> dict[str, Any]:
     text = json.dumps(value, ensure_ascii=False, default=str)
     if len(text) <= max_chars:
         return value
+    if isinstance(value.get("content"), str):
+        preserved = {
+            key: item
+            for key, item in value.items()
+            if key not in {"content"}
+        }
+        overhead = len(json.dumps({**preserved, "content": ""}, ensure_ascii=False, default=str))
+        content_limit = max(500, max_chars - overhead - 200)
+        return {
+            **preserved,
+            "content": value["content"][:content_limit],
+            "truncated": True,
+            "original_chars": len(text),
+        }
+    if isinstance(value.get("results"), list):
+        preserved = {
+            key: item
+            for key, item in value.items()
+            if key not in {"results"}
+        }
+        results: list[Any] = []
+        for item in value["results"]:
+            candidate = {**preserved, "results": [*results, item], "truncated": True, "original_chars": len(text)}
+            if len(json.dumps(candidate, ensure_ascii=False, default=str)) > max_chars:
+                break
+            results.append(item)
+        return {
+            **preserved,
+            "results": results,
+            "truncated": True,
+            "original_chars": len(text),
+        }
     return {
         "truncated": True,
         "preview": text[:max_chars],

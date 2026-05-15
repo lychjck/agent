@@ -6,6 +6,7 @@ from typing import Any
 
 from stock_assistant.core.config import DEFAULT_CONFIG, ensure_dirs, load_config
 from stock_assistant.core.models import Holding, InstrumentClassification
+from stock_assistant.core.skills import install_skill_from_url, list_installed_skills, read_skill_content
 from stock_assistant.core.utils import log
 from stock_assistant.integrations.tzzb import fetch_tzzb_holdings
 from stock_assistant.services.classification import classify_holding, classification_from_config, load_cached_classification
@@ -100,6 +101,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="允许补全分类：可能触发搜索和分类 LLM；默认只读已有配置/缓存",
     )
+    skill_parsers = subparsers.add_parser("skills", help="管理本地 Agent skills")
+    skill_subparsers = skill_parsers.add_subparsers(dest="skills_command")
+
+    skill_subparsers.add_parser("list", help="列出已安装 skills")
+
+    skill_show = skill_subparsers.add_parser("show", help="显示指定 skill 的 SKILL.md")
+    skill_show.add_argument("name", help="skill 名称")
+
+    skill_install = skill_subparsers.add_parser("install", help="从 URL 安装 SKILL.md")
+    skill_install.add_argument("url", help="raw SKILL.md URL 或 GitHub blob URL")
+    skill_install.add_argument("--name", default="", help="可选：覆盖安装后的本地 skill 名称")
     return parser
 
 def main(argv: list[str] | None = None) -> int:
@@ -124,6 +136,23 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(profile, ensure_ascii=False, indent=2))
         return 0
+
+    if command == "skills":
+        ensure_dirs(config)
+        skills_command = getattr(args, "skills_command", None)
+        if skills_command == "list":
+            payload = [record.to_dict() for record in list_installed_skills(config)]
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0
+        if skills_command == "show":
+            payload = read_skill_content(config, args.name)
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0
+        if skills_command == "install":
+            record = install_skill_from_url(config, args.url, name=args.name or None)
+            print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
+            return 0
+        parser.error("skills 需要子命令：list/show/install")
         
     # 默认为 run
     report = run(config)

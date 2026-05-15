@@ -12,6 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
+stock-assistant = "stock_assistant.cli.cli:main"
 stock-assistant-mcp = "stock_assistant.mcp_server:main"
 
 [build-system]

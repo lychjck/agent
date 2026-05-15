@@ -2,7 +2,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from stock_assistant.core.utils import deep_merge, load_env_file, log
+from stock_assistant.core.utils import config_bool, deep_merge, load_env_file, log
 
 ROOT = Path(__file__).resolve().parent.parent.parent.parent
 DEFAULT_CONFIG = ROOT / "config.toml"
@@ -130,6 +130,14 @@ DEFAULTS: dict[str, Any] = {
         "trace_dir": str(ROOT / "data" / "state" / "agent_traces"),
         "allow_external_search_tools": False,
     },
+    "skills": {
+        "enabled": True,
+        "install_dir": str(ROOT / "data" / "skills"),
+        "roots": [],
+        "max_skill_chars": 20000,
+        "install_timeout_seconds": 30,
+        "allow_url_install": True,
+    },
     "llm": {
         "enabled": False,
         "client": "openai",
@@ -165,6 +173,11 @@ def load_config(path: Path) -> dict[str, Any]:
 def ensure_dirs(config: dict[str, Any]) -> None:
     for key in ("download_dir", "report_dir", "archive_dir"):
         Path(config["paths"][key]).expanduser().mkdir(parents=True, exist_ok=True)
+    if config_bool(config.get("skills", {}).get("enabled", True)):
+        Path(config.get("skills", {}).get("install_dir", ROOT / "data" / "skills")).expanduser().mkdir(
+            parents=True,
+            exist_ok=True,
+        )
 
 def policy_value(config: dict[str, Any], key: str, fallback: Any = None) -> Any:
     if key in config.get("policy", {}):

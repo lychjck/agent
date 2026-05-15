@@ -23,3 +23,5 @@ data/research/*
 !data/research/.gitkeep
 tt.py
 .agent
+data/skills/*
+!data/skills/.gitkeep
