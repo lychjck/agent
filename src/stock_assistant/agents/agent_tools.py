@@ -108,8 +108,12 @@ class WebFetchArgs(BaseModel):
 
 class WebSearchArgs(BaseModel):
     query: str = Field(min_length=1, max_length=500)
-    engines: list[str] = Field(default_factory=list, max_length=4)
-    max_results: int = Field(default=5, ge=1, le=10)
+    engines: list[str] = Field(
+        default_factory=list, 
+        max_length=8,
+        description="可选。指定搜索引擎列表。支持: 'sogou', 'duckduckgo', 'bing_cn'。针对中文查询，强烈建议首选 'sogou'，因为其返回的中文财经数据摘要最完整。"
+    )
+    max_results: int = Field(default=8, ge=1, le=10)
 
 
 class WebReadArgs(BaseModel):
@@ -327,7 +331,7 @@ def handle_web_fetch(args: BaseModel, workspace: AgentWorkspace) -> dict[str, An
 
 def default_search_engines(query: str) -> list[str]:
     if re.search(r"[\u4e00-\u9fff]", query):
-        return ["sogou", "duckduckgo", "bing_cn"]
+        return ["sogou"]
     return ["duckduckgo", "bing"]
 
 
@@ -347,7 +351,6 @@ def handle_web_search(args: BaseModel, workspace: AgentWorkspace) -> dict[str, A
         "engines": engines,
         "count": useful_count,
         "results": results,
-        "supported_engine_names": ["baidu", "Baidu", "bing_cn", "Bing CN", "bing", "duckduckgo", "google", "sogou", "360"],
         "summary": f"搜索 {typed.query}，返回 {useful_count} 条结果",
     }
 
