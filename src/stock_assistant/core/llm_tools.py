@@ -40,16 +40,44 @@ def strip_json_markdown(text: str) -> str:
     return clean
 
 
+def extract_json_object(text: str) -> dict[str, Any]:
+    decoder = json.JSONDecoder()
+    best_payload: dict[str, Any] | None = None
+    best_score = -1
+    best_length = -1
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            payload, end = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            keys = set(payload)
+            score = 0
+            if payload.get("type") in {"research_plan", "tool_calls", "observation_reflection", "final_report"}:
+                score += 100
+            if keys & {"tool_calls", "tool_call", "final_report", "report", "research_plan", "observation_reflection"}:
+                score += 50
+            if keys & {"satisfied_needs", "unsatisfied_needs", "information_needs", "missing_capabilities"}:
+                score += 20
+            if keys & {"reasoning_summary", "thinking_trace"}:
+                score += 10
+            if score > best_score or (score == best_score and end > best_length):
+                best_payload = payload
+                best_score = score
+                best_length = end
+    if best_payload is None:
+        raise json.JSONDecodeError("No JSON object found", text, 0)
+    return best_payload
+
+
 def load_json_object(text: str) -> dict[str, Any]:
     clean = strip_json_markdown(text)
     try:
         payload = json.loads(clean)
     except json.JSONDecodeError:
-        start = clean.find("{")
-        end = clean.rfind("}")
-        if start < 0 or end <= start:
-            raise
-        payload = json.loads(clean[start:end + 1])
+        payload = extract_json_object(clean)
     if not isinstance(payload, dict):
         raise ValueError("LLM tool step JSON 顶层必须是对象")
     return payload
