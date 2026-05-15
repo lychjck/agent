@@ -327,7 +327,7 @@ def handle_web_fetch(args: BaseModel, workspace: AgentWorkspace) -> dict[str, An
 
 def default_search_engines(query: str) -> list[str]:
     if re.search(r"[\u4e00-\u9fff]", query):
-        return ["duckduckgo", "bing_cn"]
+        return ["sogou", "duckduckgo", "bing_cn"]
     return ["duckduckgo", "bing"]
 
 
