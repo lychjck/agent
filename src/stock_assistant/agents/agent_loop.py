@@ -44,6 +44,34 @@ def build_initial_agent_messages(goal: str, tools: list[dict[str, Any]], use_nat
     if not use_native_tools:
         tool_json = json.dumps(tools, ensure_ascii=False, indent=2)
         tool_text = f"可用工具如下。你只能调用这些工具，arguments 必须符合 parameters。\n{tool_json}\n\n"
+    tool_names = {
+        str(tool.get("function", {}).get("name") or tool.get("name") or "")
+        for tool in tools
+    }
+    skill_rule = ""
+    if {"list_skills", "read_skill"} <= tool_names:
+        skill_rule = (
+            "Skill 使用硬性规则：如果 list_skills 返回 count>0，下一步必须 read_skill 读取最相关 skill 的 SKILL.md；"
+            "在 read_skill 完成前，不能把 skill 发现视为已满足，不能输出 final_report。"
+        )
+        if "read_skill_file" in tool_names:
+            skill_rule += (
+                "如果 read_skill 内容提到 references、advanced search、examples、配置或配套文件，"
+                "必须用 list_skill_files/read_skill_file 读取与当前任务最相关的一个配套文件。"
+            )
+    search_rule = ""
+    if {"web_search", "web_read"} <= tool_names:
+        search_rule = (
+            "外部搜索硬性规则：如果任务涉及 ETF/基金/股票/市场/行业/宏观背景/今日行情，且可用工具包含 web_search/web_read，"
+            "必须执行分层外部研究，不能只搜索一次就结束。分层研究至少包括："
+            "1) 组合层面搜索：查询今日市场、宏观、A股/港股/美股、利率、汇率、商品等背景；"
+            "2) 主题层面搜索：按组合主要暴露主题搜索，例如红利低波、债券基金、恒生科技、纳指100、医药、消费、有色、能源、电力；"
+            "3) 标的层面搜索：对用户持仓中每个权重>=1%的标的逐一搜索；低于1%的标的如数量较多，可按主题分组搜索，但 final_report 必须列出未逐一搜索的标的。"
+            "每个 web_search 必须设置 max_results=8 到 10；如果 skill 文档建议了搜索引擎，arguments.engines 必须按 skill 指定。"
+            "每个重要主题或核心标的至少 web_read 一个相关来源页。"
+            "除非 web_search 工具报错或连续返回无关结果，否则不能在未完成组合层面+主题层面+核心标的层面搜索前输出 final_report。"
+            "如果已安装的 skill 是搜索类 skill，例如 multi-search-engine，必须先 read_skill，再按该 skill 选择搜索引擎和查询语法。"
+        )
         
     report_schema = json.dumps(agent_report_schema_hint(), ensure_ascii=False, indent=2)
     system = (
@@ -51,6 +79,8 @@ def build_initial_agent_messages(goal: str, tools: list[dict[str, Any]], use_nat
         "你不能直接读取文件、Cookie、API key 或原始账户响应。"
         "你必须先从任务本身推导信息需求，再把信息需求映射到可用工具。"
         "如果任务可能受益于用户安装的 skill、专门流程或领域方法，必须把 skill 发现纳入信息需求。"
+        f"{skill_rule}"
+        f"{search_rule}"
         "不要因为当前没有工具就假装信息足够；缺工具时必须显式记录 missing_capabilities。"
         "需要信息时，只能从给定工具列表中选择工具，并输出合法 JSON。"
         "信息不足时继续调用工具；信息足够时输出 final_report。"
@@ -66,9 +96,16 @@ def build_initial_agent_messages(goal: str, tools: list[dict[str, Any]], use_nat
         "research_plan 必须先从任务出发列出 information_needs，再列 available_tool_mapping 和 missing_capabilities。\n"
         "ETF/基金分析的信息需求至少考虑：当前组合权重、标的类型、跟踪指数、底层持仓/前十大持仓、行业/区域/风格暴露、"
         "标的自身 K 线、底层核心资产趋势、同类替代品、历史变化、限制条件。"
+        "研究深度要求：不能只基于本地技术指标给结论；必须把本地持仓/分类/技术面与外部搜索证据交叉验证。"
+        "对每个权重>=1%的标的，information_needs 必须包含：跟踪指数/投资范围、近期新闻或驱动因素、同类或替代品、当前风险点、与组合中其他标的的重叠/相关性。"
+        "对权重<1%的标的，也必须至少按行业/主题分组纳入搜索和限制说明。"
         "如果可用工具里有 list_skills/read_skill，且任务可能匹配用户安装的 skill，先列出 skill 发现需求；"
         "读取 skill 后必须按其 SKILL.md 的约束工作，并在 observation_reflection 中说明采用了哪个 skill。"
         "如果可用工具里有 web_search/web_read，搜索任务应优先用 web_search 获取结构化结果，再用 web_read 打开具体来源；"
+        "对于 ETF/基金/持仓分析，外部搜索需求至少包括：市场背景、相关行业/主题近期表现、重大新闻或宏观风险；"
+        "外部搜索计划必须分成 market_context、theme_research、holding_research 三类，并在 available_tool_mapping 中映射到 web_search/web_read。"
+        "holding_research 至少覆盖所有权重>=1%的标的；如果用户要求每个 ETF 建议，必须在 coverage_notes 逐项说明每个 ETF 是否完成外部搜索、技术指标、分类信息三类覆盖。"
+        "如果 web_search/web_read 可用，这些需求必须映射到 web_search/web_read，而不是写成 missing_capabilities。"
         "只有需要直接访问某个 URL 时才使用底层 web_fetch。"
         "当前工具无法获取的信息必须写入 missing_capabilities，例如 ETF 底层持仓、跟踪指数、指数成分、成分股 K 线等。\n\n"
         "每次输出必须包含 reasoning_summary 和 thinking_trace。thinking_trace 用对象表达："
@@ -104,6 +141,8 @@ def build_initial_agent_messages(goal: str, tools: list[dict[str, Any]], use_nat
         f"最终 report 必须符合这个 schema：\n{report_schema}\n\n"
         "最终报告前必须至少有一次 observation_reflection，并且最近一次 observation_reflection 的 next_action 必须是 final_report。"
         "如果目标要求每个 ETF 的建议，必须在 reflection.coverage_notes 中说明覆盖范围；没有足够数据的标的要列为未覆盖或限制。"
+        "最终报告不能只给笼统建议；每个标的建议必须引用至少一种本地证据（持仓/分类/技术）和一种外部证据（搜索/网页读取），"
+        "如果缺外部证据，action_type 只能是 hold/watch，且必须在 limitations 中说明该标的结论可信度不足。"
         "现在只输出第一轮 research_plan。"
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -131,6 +170,11 @@ def build_act_prompt() -> str:
     return (
         "已记录 research_plan。现在进入执行阶段："
         "只能对 available_tool_mapping 中当前工具能满足的信息需求调用工具。"
+        "如果计划中包含 skill 发现，且 list_skills/read_skill 可用，必须先调用 list_skills；"
+        "如果已经知道存在可用 skill 但尚未 read_skill，下一步必须调用 read_skill。"
+        "如果 web_search/web_read 可用，且任务涉及 ETF/基金/股票/市场/行业/宏观背景，"
+        "必须按 market_context、theme_research、holding_research 三层安排 web_search，并在得到搜索结果后用 web_read 打开相关来源。"
+        "每次最多并行调用 6 个搜索/读取工具，优先覆盖权重>=1%的标的；不要因为已有技术指标就跳过外部搜索。"
         "每次调用工具前，在 thinking_trace.decision_basis 中说明为什么这个工具能推进任务。"
         "如果已有证据不足，不要输出 final_report；如果缺少 ETF 底层持仓/指数成分等能力，"
         "继续在 missing_capabilities 中保留，不要臆测。"
@@ -142,6 +186,13 @@ def build_reflection_prompt() -> str:
         "你刚收到了一个或多个工具 observation。下一步必须输出 observation_reflection，不能调用工具，也不能输出 final_report。"
         "请审查：哪些 information_needs 已满足、哪些未满足、工具结果如何改变判断、"
         "是否覆盖了用户要求的每个 ETF 建议、下一步应该继续调用哪些工具或是否可以最终报告。"
+        "如果 list_skills observation 显示 count>0，而当前上下文还没有 read_skill observation，"
+        "next_action 必须是 continue_tools，required_tool_calls 必须包含 read_skill。"
+        "如果 read_skill 显示这是搜索类 skill，且 web_search/web_read 可用，同时任务涉及 ETF/基金/股票/市场/行业/宏观背景，"
+        "next_action 必须是 continue_tools，required_tool_calls 必须包含 web_search，并说明属于 market_context、theme_research 还是 holding_research；"
+        "如果已有 web_search 结果且存在相关 URL，required_tool_calls 必须包含 web_read。"
+        "如果还没有覆盖所有权重>=1%的标的外部搜索，next_action 不得为 final_report；"
+        "如果低权重标的未逐一搜索，coverage_notes 必须按主题列出它们被哪一次分组搜索覆盖。"
         "如果还缺 ETF 底层持仓/指数成分等能力，要继续保留在 missing_capabilities，并说明这对建议强度的影响。"
         "observation_reflection.next_action 只能是 continue_tools 或 final_report。"
     )
@@ -157,6 +208,8 @@ def build_after_reflection_prompt(reflection: dict[str, Any]) -> str:
         )
     return (
         "已记录 observation_reflection。现在请根据 required_tool_calls 或 unsatisfied_needs 继续调用工具。"
+        "如果 required_tool_calls 中提到 read_skill、web_search 或 web_read，且这些工具在可用工具列表中，优先执行这些工具。"
+        "如果还没有完成 market_context、theme_research、holding_research 三层搜索，不要输出 final_report；继续搜索或读取来源页。"
         "如果当前工具无法满足某个需求，不要臆测；保留 missing_capabilities，并选择还能推进任务的可用工具。"
     )
 
@@ -230,6 +283,122 @@ def build_coverage_prompt(missing_codes: list[str]) -> str:
     )
 
 
+def goal_requires_external_research(goal: str) -> bool:
+    normalized = goal.strip()
+    return any(token in normalized for token in ("持仓", "ETF", "基金", "股票", "市场", "行业", "宏观", "行情"))
+
+
+def important_holding_records(workspace: AgentWorkspace, *, min_weight_pct: float = 1.0) -> list[dict[str, Any]]:
+    total_value = workspace.total_value()
+    if not total_value:
+        return []
+    records: list[dict[str, Any]] = []
+    for holding in workspace.ensure_holdings():
+        if holding.market_value is None:
+            continue
+        weight_pct = holding.market_value / total_value * 100
+        if weight_pct >= min_weight_pct:
+            records.append({
+                "code": holding.code,
+                "name": holding.name,
+                "weight_pct": round(weight_pct, 4),
+            })
+    return sorted(records, key=lambda item: float(item.get("weight_pct") or 0), reverse=True)
+
+
+def external_research_gap(
+    workspace: AgentWorkspace,
+    goal: str,
+    registry: dict[str, Any],
+    web_search_queries: list[str],
+    web_read_count: int,
+) -> dict[str, Any] | None:
+    if "web_search" not in registry or "web_read" not in registry:
+        return None
+    if not goal_requires_external_research(goal):
+        return None
+    important = important_holding_records(workspace)
+    query_blob = "\n".join(web_search_queries).lower()
+    missing = [
+        item for item in important
+        if str(item.get("code", "")).lower() not in query_blob
+        and str(item.get("name", "")).lower() not in query_blob
+    ]
+    reasons: list[str] = []
+    if not web_search_queries:
+        reasons.append("尚未执行 web_search")
+    if web_read_count <= 0:
+        reasons.append("尚未执行 web_read，只有搜索结果摘要，没有打开来源页")
+    if missing:
+        reasons.append(f"权重>=1%的标的仍有 {len(missing)} 个未在搜索 query 中逐项覆盖")
+    if not reasons:
+        return None
+    return {
+        "reasons": reasons,
+        "important_count": len(important),
+        "searched_queries": web_search_queries,
+        "web_read_count": web_read_count,
+        "missing_holding_research": missing,
+    }
+
+
+def build_external_research_gate_prompt(gap: dict[str, Any]) -> str:
+    missing = gap.get("missing_holding_research") or []
+    missing_text = ", ".join(
+        f"{item.get('code')} {item.get('name')}({item.get('weight_pct')}%)"
+        for item in missing[:12]
+    )
+    return (
+        "最终报告暂缓：后端检查发现外部研究覆盖不足，不能把未完成的搜索说成已经覆盖。"
+        f"原因：{'; '.join(str(item) for item in gap.get('reasons', []))}。"
+        f"尚未逐项搜索的核心标的：{missing_text or '无'}。"
+        "下一步必须继续调用工具："
+        "1) 如果 web_read_count=0，先从已有 web_search 结果中选择最相关 URL 调用 web_read；"
+        "2) 对 missing_holding_research 中的标的分批调用 web_search，每次最多 6 个工具调用，query 必须包含标的代码和名称；"
+        "3) 之后重新 observation_reflection，coverage_notes 必须基于实际工具调用，不得虚报。"
+    )
+
+
+def final_report_missing_holding_analysis(
+    workspace: AgentWorkspace,
+    goal: str,
+    report_payload: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if not goal_requires_full_technical_coverage(goal):
+        return []
+    report = report_payload or {}
+    if isinstance(report.get("report"), dict):
+        report = report["report"]
+    items = report.get("holding_analysis")
+    if not isinstance(items, list):
+        items = []
+    covered = {
+        str(item.get("target_code") or item.get("code") or "").strip()
+        for item in items
+        if isinstance(item, dict)
+    }
+    target_holdings = [
+        holding for holding in workspace.ensure_holdings()
+        if holding.code and (("ETF" not in goal and "etf" not in goal.lower()) or holding.asset_type == "etf")
+    ]
+    return [
+        {"code": holding.code, "name": holding.name, "asset_type": holding.asset_type}
+        for holding in target_holdings
+        if holding.code not in covered
+    ]
+
+
+def build_holding_analysis_gate_prompt(missing: list[dict[str, Any]]) -> str:
+    missing_text = ", ".join(f"{item.get('code')} {item.get('name')}" for item in missing[:20])
+    return (
+        "最终报告暂缓：用户要求每个 ETF 的建议，但 final_report.holding_analysis 没有逐项覆盖。"
+        f"缺少 {len(missing)} 个标的：{missing_text}。"
+        "下一步不要重新做无关总结；请基于已经获得的本地技术、分类、组合画像和外部搜索证据，"
+        "重新输出 final_report，并在 holding_analysis 中为这些缺失标的逐项给出建议。"
+        "如果某个标的缺少外部证据，action_type 只能是 hold/watch，并在 reason 与 limitations 中说明证据不足。"
+    )
+
+
 async def run_tool_agent_events(
     config: dict[str, Any],
     *,
@@ -262,6 +431,8 @@ async def run_tool_agent_events(
     reflection_required = False
     reflection_seen = False
     last_reflection: dict[str, Any] | None = None
+    web_search_queries: list[str] = []
+    web_read_count = 0
 
     trace.write("agent_start", {"goal": goal, "model": model, "tools": list(registry)})
     trace_status = str(trace.path) if trace.enabled else "disabled"
@@ -309,16 +480,26 @@ async def run_tool_agent_events(
         if reflection_required and step.type != "observation_reflection":
             message = f"工具 observation 后必须先输出 observation_reflection，实际输出 {step.type}"
             trace.write("error", {"turn": turn, "error": message, "raw_text": step.raw_text})
-            agent_log(run_id, message, turn=turn, level="ERROR")
+            agent_log(run_id, message, turn=turn, level="WARN")
             yield tool_agent_event(
-                "error",
-                "LLM 未先反思工具结果",
+                "protocol_repair",
+                "LLM 未先反思工具结果，已要求重新输出 observation_reflection",
                 run_id=run_id,
                 turn=turn,
-                error=message,
+                warning=message,
                 raw_text=step.raw_text,
             )
-            return
+            messages.append({
+                "role": "user",
+                "content": (
+                    "协议纠偏：你刚收到工具 observation 后，必须先输出 observation_reflection，"
+                    f"但你输出了 {step.type}。请忽略上一条格式错误的输出，"
+                    "现在只输出一个合法 JSON 对象，type 必须是 observation_reflection；"
+                    "不能输出 research_plan、tool_calls 或 final_report。"
+                    "observation_reflection.next_action 只能是 continue_tools 或 final_report。"
+                ),
+            })
+            continue
         if step.type == "research_plan":
             agent_log(
                 run_id,
@@ -442,6 +623,30 @@ async def run_tool_agent_events(
                 messages.append({"role": "user", "content": build_coverage_prompt(missing_codes)})
                 messages.append({"role": "user", "content": build_reflection_prompt()})
                 continue
+            external_gap = external_research_gap(workspace, goal, registry, web_search_queries, web_read_count)
+            if next_action == "final_report" and external_gap:
+                agent_log(
+                    run_id,
+                    (
+                        "external_research_gate_after_reflection "
+                        f"missing={len(external_gap.get('missing_holding_research') or [])} "
+                        f"web_read_count={web_read_count} web_search_count={len(web_search_queries)}"
+                    ),
+                    turn=turn,
+                    level="WARN",
+                )
+                trace.write("coverage_gate", {"turn": turn, "type": "external_research", "gap": external_gap})
+                yield tool_agent_event(
+                    "coverage_gate",
+                    "外部研究覆盖不足，暂缓最终报告",
+                    run_id=run_id,
+                    turn=turn,
+                    missing_holding_research=external_gap.get("missing_holding_research", []),
+                    web_read_count=web_read_count,
+                    searched_queries=web_search_queries,
+                )
+                messages.append({"role": "user", "content": build_external_research_gate_prompt(external_gap)})
+                continue
             messages.append({"role": "user", "content": build_after_reflection_prompt(last_reflection)})
             continue
 
@@ -564,6 +769,52 @@ async def run_tool_agent_events(
                 messages.append({"role": "user", "content": build_coverage_prompt(missing_codes)})
                 messages.append({"role": "user", "content": build_reflection_prompt()})
                 continue
+            external_gap = external_research_gap(workspace, goal, registry, web_search_queries, web_read_count)
+            if external_gap:
+                agent_log(
+                    run_id,
+                    (
+                        "final_report deferred external_research "
+                        f"missing={len(external_gap.get('missing_holding_research') or [])} "
+                        f"web_read_count={web_read_count} web_search_count={len(web_search_queries)}"
+                    ),
+                    turn=turn,
+                    level="WARN",
+                )
+                trace.write("coverage_gate", {"turn": turn, "type": "external_research", "gap": external_gap})
+                yield tool_agent_event(
+                    "coverage_gate",
+                    "最终报告暂缓：外部搜索/阅读覆盖不足",
+                    run_id=run_id,
+                    turn=turn,
+                    missing_holding_research=external_gap.get("missing_holding_research", []),
+                    web_read_count=web_read_count,
+                    searched_queries=web_search_queries,
+                )
+                reflection_required = False
+                messages.append({"role": "user", "content": build_external_research_gate_prompt(external_gap)})
+                continue
+            missing_holding_analysis = final_report_missing_holding_analysis(workspace, goal, step.final_report)
+            if missing_holding_analysis:
+                agent_log(
+                    run_id,
+                    f"final_report deferred missing_holding_analysis={len(missing_holding_analysis)}",
+                    turn=turn,
+                    level="WARN",
+                )
+                trace.write(
+                    "coverage_gate",
+                    {"turn": turn, "type": "holding_analysis", "missing": missing_holding_analysis},
+                )
+                yield tool_agent_event(
+                    "coverage_gate",
+                    "最终报告暂缓：未逐项覆盖每个 ETF 建议",
+                    run_id=run_id,
+                    turn=turn,
+                    missing_holding_analysis=missing_holding_analysis,
+                )
+                messages.append({"role": "user", "content": build_holding_analysis_gate_prompt(missing_holding_analysis)})
+                continue
             llm_context = workspace.build_llm_context()
             report = parse_agent_report(
                 json.dumps(step.final_report or {}, ensure_ascii=False),
@@ -653,6 +904,12 @@ async def run_tool_agent_events(
                 message=observation.message,
                 observation=observation.model_dump(),
             )
+            if observation.ok and call.name == "web_search":
+                query = str((observation.result or {}).get("query") or call.arguments.get("query") or "").strip()
+                if query:
+                    web_search_queries.append(query)
+            if observation.ok and call.name == "web_read":
+                web_read_count += 1
             messages.append(tool_observation_message(call, observation))
 
         if step.type == "tool_calls":
