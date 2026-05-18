@@ -1,10 +1,17 @@
+# ==========================================
+# Stock Assistant 核心配置文件 (兜底默认值)
+# ==========================================
+# 提示：你可以复制此文件为 config.toml，并在其中修改你需要自定义的值。
+# 程序启动时，会自动以本文件为底底，并使用 config.toml 中的同名字段进行覆盖。
+
 [paths]
-download_dir = "/Users/liyanran/github/stock/downloads"
-report_dir = "/Users/liyanran/github/stock/reports"
-archive_dir = "/Users/liyanran/github/stock/data/holdings"
+# 文件存储相关的相对路径（以项目根目录为基准）
+download_dir = "downloads"
+report_dir = "reports"
+archive_dir = "data/holdings"
 
 [ledger]
-# 填你的投资账本地址。
+# 投资账本 API 地址（目前主要接入同花顺等账本体系）
 url = "https://example.com/your-investment-ledger"
 # 当前仅支持 tzzb_api 模式（通过网络请求获取持仓）
 mode = "tzzb_api"
@@ -15,17 +22,20 @@ uid = ""
 api_timeout_seconds = 30
 
 [market]
+# 市场行情数据源 (如 sina)
 provider = "sina"
 history_days = 260
 timeout_seconds = 15
 
 [analysis]
+# 持仓分析的相关阈值设定
 min_history_days = 80
 loss_alert_pct = -8.0
 gain_trim_pct = 20.0
 max_single_position_pct = 35.0
 
 [profile]
+# 用户的投资画像和偏好设置
 base_currency = "CNY"
 risk_level = "balanced"
 investment_style = "long_term_etf"
@@ -33,6 +43,7 @@ allow_external_search = false
 allow_external_llm = true
 
 [policy]
+# 投资组合约束与再平衡策略的红线
 cash_min_pct = 5
 max_single_position_pct = 20
 max_sector_pct = 35
@@ -44,6 +55,7 @@ rebalance_drift_pct = 5
 rebalance_target_buffer_pct = 2
 
 [allocation_targets]
+# 资产大类目标分配权重（百分比）
 broad_index = 40
 sector_equity = 25
 bond = 15
@@ -52,22 +64,25 @@ commodity = 5
 cash = 5
 
 [classification]
+# 标的分类引擎配置 (hybrid: 本地规则 + LLM 兜底)
 mode = "hybrid"
 require_user_review_below_confidence = 0.75
 cache_ttl_days = 90
 
 [classification.llm]
+# 专门用于分类的小型/快速大模型配置
 enabled = true
 client = "urllib"
 base_url = "http://10.33.207.193:1234/v1"
 model = "google/gemma-4-31b"
 temperature = 0.0
 timeout_seconds = 120
-max_tokens = 2048
+max_tokens = 8192
 stream = false
 disable_thinking = true
 
 [classifications."510300"]
+# 手动强制覆盖的标的分类示例
 asset_class = "broad_index"
 sector = ""
 theme = "csi300"
@@ -76,13 +91,14 @@ strategy = "passive_index"
 reviewed_by_user = true
 
 [search]
+# Agent 外部研究搜索核心配置
 enabled = true
-provider = "opencli"
+provider = "opencli" # 默认使用 opencli 作为聚合搜索引擎
 cache_dir = "data/research"
 timeout_seconds = 20
 max_results = 5
 search_depth = "basic"
-# 可选：none/day/week/month/year。opencli 会映射为 --time，Tavily 会映射为 time_range，Brave 会映射为 freshness。
+# 可选：none/day/week/month/year。opencli 映射为 --time，Tavily 为 time_range。
 freshness = "year"
 start_date = ""
 end_date = ""
@@ -102,6 +118,7 @@ enabled = false
 api_key_env = "BRAVE_SEARCH_API_KEY"
 
 [search.providers.opencli]
+# opencli 搜索引擎后台配置
 enabled = true
 command_path = "opencli"
 site = "duckduckgo"
@@ -113,6 +130,7 @@ window = "background"
 site_session = "ephemeral"
 
 [search.providers.opencli.allowed_commands]
+# 安全白名单：Agent 允许执行的 opencli 站点与命令
 duckduckgo = "search,suggest"
 google = "search,news,suggest,trends"
 brave = "search"
@@ -127,10 +145,12 @@ reuters = "search,article-detail"
 web = "read"
 
 [search.source_tiers]
+# 信息源置信度分层
 tier1 = "sse.com.cn,szse.cn,csindex.com.cn,cnindex.com.cn"
 tier2 = "eastmoney.com,10jqka.com.cn,fund.eastmoney.com"
 
 [agent]
+# 核心 Agent 行为与限制
 enabled = true
 strict_json = true
 llm_can_create_new_actions = false
@@ -138,13 +158,16 @@ save_snapshots = true
 snapshot_dir = "data/state"
 tool_agent_enabled = true
 tool_agent_default = true
+# 防止 Agent 无限循环的保险丝
 max_tool_turns = 12
 max_tool_calls = 16
 save_traces = true
 trace_dir = "data/state/agent_traces"
+# 是否允许 Agent 主动调用 web_search 补充上下文
 allow_external_search_tools = false
 
 [skills]
+# 外挂技能 (Skills) 目录
 enabled = true
 install_dir = "data/skills"
 roots = []
@@ -153,6 +176,9 @@ install_timeout_seconds = 30
 allow_url_install = true
 
 [llm]
+# ==============================================================
+# Agent 主思考大模型配置 (生成研究计划、分析报告的核心大脑)
+# ==============================================================
 enabled = true
 client = "openai"
 base_url = "http://10.33.207.193:1234/v1"
@@ -161,6 +187,11 @@ api_key_env = ""
 api_key_file = ""
 temperature = 0.2
 timeout_seconds = 900
+# 【重要】：如果使用具备深度思考能力（如 DeepSeek-R1 蒸馏）的模型，
+# 请确保此 max_tokens 足够大（如 32768 或 65536）。
+# 若出现 "LLM stream 只返回了 reasoning_content" 的截断报错，
+# 且调大此处无效，说明是 LM Studio 或推理服务端存在物理 Context Length 限制，
+# 需要在服务端控制台中调大上下文窗口。
 max_tokens = 65536
 stream = true
 disable_thinking = false

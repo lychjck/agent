@@ -2,6 +2,7 @@ import json
 import re
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Callable
 from typing import Any, Literal
 
@@ -143,6 +144,92 @@ class OpenCliCommandArgs(BaseModel):
         default_factory=dict,
         description="命令选项，不带 -- 前缀，例如 limit=10、region=cn-zh、type=1、url=https://...。",
     )
+
+
+STOCK_CODE_PREFIXES = ("000", "001", "002", "003", "300", "301", "600", "601", "603", "605", "688")
+FUND_CODE_PREFIXES = ("007", "010", "011", "012", "013", "014", "015", "016", "017", "018", "019", "020", "021")
+ETF_CODE_PREFIXES = ("15", "16", "50", "51", "52", "56", "58")
+FUND_NAME_TOKENS = ("ETF", "LOF", "基金", "联接", "债券", "混合", "指数", "增强", "货币")
+NON_ETF_FUND_NAME_TOKENS = ("联接", "债券", "混合", "增强", "货币")
+
+
+def is_stock_like_holding(code: str, name: str, asset_type: str = "") -> bool:
+    normalized_code = str(code or "").strip()
+    normalized_name = str(name or "").strip().upper()
+    normalized_type = str(asset_type or "").strip().lower()
+    if normalized_type == "stock":
+        return True
+    if any(token in normalized_name for token in FUND_NAME_TOKENS):
+        return False
+    if normalized_code.startswith(FUND_CODE_PREFIXES):
+        return False
+    return len(normalized_code) == 6 and normalized_code.startswith(STOCK_CODE_PREFIXES)
+
+
+def is_etf_like_holding(code: str, name: str, asset_type: str = "") -> bool:
+    normalized_code = str(code or "").strip()
+    normalized_name = str(name or "").strip().upper()
+    normalized_type = str(asset_type or "").strip().lower()
+    if normalized_type != "etf":
+        return False
+    if is_stock_like_holding(normalized_code, normalized_name, normalized_type):
+        return False
+    if normalized_code.startswith(FUND_CODE_PREFIXES):
+        return False
+    if any(token in normalized_name for token in NON_ETF_FUND_NAME_TOKENS):
+        return False
+    return (
+        "ETF" in normalized_name
+        or "LOF" in normalized_name
+        or normalized_code.startswith(ETF_CODE_PREFIXES)
+    )
+
+
+def holding_query_suffix(query: str) -> str:
+    text = str(query or "")
+    parts: list[str] = []
+    if "近期" in text:
+        parts.append("近期")
+    if any(token in text for token in ("表现", "行情", "走势")):
+        parts.append("表现")
+    if "驱动" in text:
+        parts.append("驱动因素")
+    if any(token in text for token in ("风险", "风险点")):
+        parts.append("风险点")
+    if any(token in text for token in ("新闻", "动态", "重大")):
+        parts.append("新闻动态")
+    if not parts:
+        parts = ["近期表现", "驱动因素", "风险点"]
+    output: list[str] = []
+    for part in parts:
+        if part not in output:
+            output.append(part)
+    return " ".join(output)
+
+
+def split_multi_holding_query(query: str, workspace: AgentWorkspace) -> list[str]:
+    text = str(query or "").strip()
+    if not text:
+        return []
+    matches: list[tuple[str, str]] = []
+    for holding in workspace.ensure_holdings():
+        code = str(holding.code or "").strip()
+        name = str(holding.name or "").strip()
+        if not code:
+            continue
+        if code in text or (name and name in text):
+            matches.append((code, name))
+    unique: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for code, name in matches:
+        if code in seen:
+            continue
+        seen.add(code)
+        unique.append((code, name))
+    if len(unique) <= 1:
+        return [text]
+    suffix = holding_query_suffix(text)
+    return [f"{code} {name} {suffix}".strip() for code, name in unique]
 
 
 def holding_tool_record(holding: Any, total_value: float | None, fields: list[str]) -> dict[str, Any]:
@@ -364,11 +451,44 @@ def handle_web_search(args: BaseModel, workspace: AgentWorkspace) -> dict[str, A
 
     from stock_assistant.integrations.search import build_search_provider
 
-    results = build_search_provider(opencli_search_config).search(typed.query, typed.max_results)
+    provider = build_search_provider(opencli_search_config)
+    queries = split_multi_holding_query(typed.query, workspace)
+    max_workers = min(6, max(1, len(queries)))
+    results_by_query: list[dict[str, Any]] = []
+    if len(queries) == 1:
+        results_by_query.append({"query": queries[0], "results": provider.search(queries[0], typed.max_results)})
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(provider.search, query, typed.max_results): query
+                for query in queries
+            }
+            for future in as_completed(futures):
+                query = futures[future]
+                try:
+                    results_by_query.append({"query": query, "results": future.result()})
+                except Exception as exc:  # noqa: BLE001
+                    results_by_query.append({"query": query, "results": [], "error": str(exc)})
+        results_by_query.sort(key=lambda item: queries.index(str(item.get("query", ""))))
+    results = [
+        item
+        for group in results_by_query
+        for item in list(group.get("results") or [])
+    ]
     return {
         "query": typed.query,
+        "queries": queries,
+        "split": len(queries) > 1,
         "engines": ["opencli"],
         "count": len(results),
+        "results_by_query": [
+            {
+                "query": str(group.get("query", "")),
+                "count": len(group.get("results") or []),
+                "error": str(group.get("error", "")),
+            }
+            for group in results_by_query
+        ],
         "results": [
             {
                 "engine": str(item.get("source", "opencli")),
@@ -378,8 +498,25 @@ def handle_web_search(args: BaseModel, workspace: AgentWorkspace) -> dict[str, A
             }
             for item in results
         ],
-        "summary": f"opencli 搜索 {typed.query}，返回 {len(results)} 条结果",
+        "summary": (
+            f"opencli 搜索 {typed.query}，拆分为 {len(queries)} 个查询并返回 {len(results)} 条结果"
+            if len(queries) > 1
+            else f"opencli 搜索 {typed.query}，返回 {len(results)} 条结果"
+        ),
     }
+
+
+def content_quality_warning(text: str, url: str) -> str:
+    normalized = re.sub(r"\s+", "", text or "")
+    login_hits = sum(1 for token in ("登录", "注册", "验证码", "请登录", "扫码", "立即登录") if token in normalized)
+    finance_hits = sum(1 for token in ("行情", "市场", "基金", "ETF", "股票", "指数", "债券", "收益", "风险") if token in normalized)
+    if login_hits >= 2 and finance_hits <= 1:
+        return "页面疑似登录/拦截页，正文质量低"
+    if "xueqiu.com" in url and login_hits >= 2 and finance_hits <= 2:
+        return "雪球页面疑似登录/拦截页，正文质量低"
+    if len(normalized) < 120:
+        return "正文过短，可能不是有效来源页"
+    return ""
 
 
 def handle_web_read(args: BaseModel, workspace: AgentWorkspace) -> dict[str, Any]:
@@ -394,13 +531,20 @@ def handle_web_read(args: BaseModel, workspace: AgentWorkspace) -> dict[str, Any
         text = strip_html_tags(text)
     text = text.strip()
     truncated = len(text) > typed.max_chars
+    quality_warning = content_quality_warning(text, final_url)
     return {
         "url": url,
         "final_url": final_url,
         "content_type": content_type,
         "content": text[:typed.max_chars],
         "truncated": truncated,
-        "summary": f"读取 {final_url}，返回 {min(len(text), typed.max_chars)} 字符" + ("（内容已截断）" if truncated else ""),
+        "content_quality": "low" if quality_warning else "normal",
+        "quality_warning": quality_warning,
+        "summary": (
+            f"读取 {final_url}，返回 {min(len(text), typed.max_chars)} 字符"
+            + ("（内容已截断）" if truncated else "")
+            + (f"；警告：{quality_warning}" if quality_warning else "")
+        ),
     }
 
 
@@ -484,19 +628,37 @@ def handle_opencli_command(args: BaseModel, workspace: AgentWorkspace) -> dict[s
     cmd.extend(["-f", "json"])
 
     timeout_seconds = int(search_config.get("timeout_seconds", 20) or 20)
-    try:
-        completed = subprocess.run(
-            cmd,
+    def run_command(command_args: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            command_args,
             check=False,
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
         )
+
+    try:
+        completed = run_command(cmd)
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(f"opencli 执行失败: {exc}") from exc
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout).strip()
-        raise RuntimeError(f"opencli 执行失败 exit={completed.returncode}: {detail}")
+        fallback_completed: subprocess.CompletedProcess[str] | None = None
+        symbol = str((typed.positionals or [""])[0]).strip().upper()
+        if site == "eastmoney" and command == "quote" and symbol in {"HSI", "HSTECH", "NDX", "IXIC", "DJI", "SPX"}:
+            fallback_cmd = [command_path]
+            if profile:
+                fallback_cmd.extend(["--profile", profile])
+            fallback_cmd.extend(["xueqiu", "stock", symbol, "-f", "json"])
+            try:
+                fallback_completed = run_command(fallback_cmd)
+            except Exception:
+                fallback_completed = None
+        if fallback_completed is None or fallback_completed.returncode != 0:
+            raise RuntimeError(f"opencli 执行失败 exit={completed.returncode}: {detail}")
+        completed = fallback_completed
+        site = "xueqiu"
+        command = "stock"
     try:
         payload: Any = json.loads(completed.stdout)
     except Exception:

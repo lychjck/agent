@@ -1,12 +1,13 @@
 import datetime as dt
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, AsyncIterator
 
 from stock_assistant.agents.agent import save_ai_report
-from stock_assistant.agents.agent_executor import execute_tool_call, tool_observation_message
+from stock_assistant.agents.agent_executor import ToolObservation, execute_tool_call, tool_observation_message
 from stock_assistant.agents.agent_llm import agent_report_schema_hint, parse_agent_report
-from stock_assistant.agents.agent_tools import build_agent_tool_registry, tool_schemas
+from stock_assistant.agents.agent_tools import build_agent_tool_registry, is_etf_like_holding, tool_schemas
 from stock_assistant.agents.agent_trace import AgentTraceWriter
 from stock_assistant.agents.agent_workspace import AgentWorkspace
 from stock_assistant.core.llm import llm_enabled
@@ -276,6 +277,58 @@ def split_oversized_tool_calls(calls: list[LlmToolCall]) -> list[LlmToolCall]:
     return output
 
 
+def externally_slow_tool(name: str) -> bool:
+    return name in {"web_search", "web_read", "opencli_command", "web_fetch"}
+
+
+def merge_unique_strings(left: Any, right: Any) -> list[str]:
+    output: list[str] = []
+    for value in list(left or []) + list(right or []):
+        text = str(value).strip()
+        if text and text not in output:
+            output.append(text)
+    return output
+
+
+def normalize_report_payload(report_payload: dict[str, Any] | None) -> dict[str, Any]:
+    report = dict(report_payload or {})
+    if isinstance(report.get("report"), dict):
+        report = dict(report["report"])
+    return report
+
+
+def merge_final_report_patch(base_payload: dict[str, Any] | None, patch_payload: dict[str, Any] | None) -> dict[str, Any]:
+    base = normalize_report_payload(base_payload)
+    patch = normalize_report_payload(patch_payload)
+    merged = dict(base)
+    for key, value in patch.items():
+        if key in {"holding_analysis", "limitations", "evidence"}:
+            continue
+        if value not in (None, "", [], {}):
+            merged[key] = value
+    base_items = [
+        item for item in base.get("holding_analysis", [])
+        if isinstance(item, dict)
+    ] if isinstance(base.get("holding_analysis"), list) else []
+    patch_items = [
+        item for item in patch.get("holding_analysis", [])
+        if isinstance(item, dict)
+    ] if isinstance(patch.get("holding_analysis"), list) else []
+    by_code: dict[str, dict[str, Any]] = {}
+    ordered_codes: list[str] = []
+    for item in base_items + patch_items:
+        code = str(item.get("target_code") or item.get("code") or "").strip()
+        key = code or f"__index_{len(ordered_codes)}"
+        if key not in ordered_codes:
+            ordered_codes.append(key)
+        by_code[key] = item
+    if ordered_codes:
+        merged["holding_analysis"] = [by_code[key] for key in ordered_codes]
+    merged["limitations"] = merge_unique_strings(base.get("limitations"), patch.get("limitations"))
+    merged["evidence"] = merge_unique_strings(base.get("evidence"), patch.get("evidence"))
+    return merged
+
+
 def goal_requires_full_technical_coverage(goal: str) -> bool:
     normalized = goal.strip()
     return any(token in normalized for token in ("每个", "全部", "所有", "逐个"))
@@ -403,7 +456,11 @@ def final_report_missing_holding_analysis(
     }
     target_holdings = [
         holding for holding in workspace.ensure_holdings()
-        if holding.code and (("ETF" not in goal and "etf" not in goal.lower()) or holding.asset_type == "etf")
+        if holding.code
+        and (
+            ("ETF" not in goal and "etf" not in goal.lower())
+            or is_etf_like_holding(holding.code, holding.name, holding.asset_type)
+        )
     ]
     return [
         {"code": holding.code, "name": holding.name, "asset_type": holding.asset_type}
@@ -415,10 +472,11 @@ def final_report_missing_holding_analysis(
 def build_holding_analysis_gate_prompt(missing: list[dict[str, Any]]) -> str:
     missing_text = ", ".join(f"{item.get('code')} {item.get('name')}" for item in missing[:20])
     return (
-        "最终报告暂缓：用户要求每个 ETF 的建议，但 final_report.holding_analysis 没有逐项覆盖。"
+        "最终报告暂缓：已收集到的证据没有丢失；问题是 final_report.holding_analysis 没有逐项写入每个 ETF 的建议。"
         f"缺少 {len(missing)} 个标的：{missing_text}。"
         "下一步不要重新做无关总结；请基于已经获得的本地技术、分类、组合画像和外部搜索证据，"
-        "重新输出 final_report，并在 holding_analysis 中为这些缺失标的逐项给出建议。"
+        "只输出合法 JSON，type 必须是 final_report；report 可以只包含 holding_analysis、limitations、evidence，"
+        "holding_analysis 只写这些缺失标的，后端会与上一版 final_report 合并。不要输出 final_report_patch。"
         "如果某个标的缺少外部证据，action_type 只能是 hold/watch，并在 reason 与 limitations 中说明证据不足。"
     )
 
@@ -431,6 +489,7 @@ async def run_tool_agent_events(
     model_override: str | None = None,
     save_snapshot: bool = True,
     save_report: bool = True,
+    resume_state: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     if not config_bool(config.get("agent", {}).get("tool_agent_enabled", False)):
         log("[tool-agent] disabled by agent.tool_agent_enabled=false", level="WARN", name="tool_agent")
@@ -444,19 +503,103 @@ async def run_tool_agent_events(
     run_id = agent_run_id()
     model = model_override or config.get("llm", {}).get("model", "unknown")
     trace = AgentTraceWriter(config, run_id)
-    workspace = AgentWorkspace(config, cached_results=cached_results)
+    state = resume_state or {}
+    workspace = AgentWorkspace(config, cached_results=state.get("cached_results") or cached_results)
     registry = build_agent_tool_registry(config)
     schemas = tool_schemas(registry)
     use_native_tools = config_bool(config.get("agent", {}).get("use_native_tools", False))
-    messages = build_initial_agent_messages(goal, schemas, use_native_tools=use_native_tools)
+    messages = list(state.get("messages") or build_initial_agent_messages(goal, schemas, use_native_tools=use_native_tools))
     max_turns = int(config.get("agent", {}).get("max_tool_turns", 12) or 12)
+    start_turn = int(state.get("next_turn", 1) or 1)
+    if resume_state:
+        max_turns = start_turn + max_turns
     max_calls = int(config.get("agent", {}).get("max_tool_calls", 16) or 16)
-    tool_call_count = 0
-    reflection_required = False
-    reflection_seen = False
-    last_reflection: dict[str, Any] | None = None
-    web_search_queries: list[str] = []
-    web_read_count = 0
+    tool_call_count = int(state.get("tool_call_count", 0) or 0)
+    reflection_required = bool(state.get("reflection_required", False))
+    reflection_seen = bool(state.get("reflection_seen", False))
+    last_reflection: dict[str, Any] | None = state.get("last_reflection") if isinstance(state.get("last_reflection"), dict) else None
+    web_search_queries: list[str] = [str(item) for item in state.get("web_search_queries", [])]
+    web_read_count = int(state.get("web_read_count", 0) or 0)
+    pending_final_report: dict[str, Any] | None = (
+        state.get("pending_final_report") if isinstance(state.get("pending_final_report"), dict) else None
+    )
+
+    def checkpoint(next_turn: int) -> dict[str, Any]:
+        return {
+            "messages": messages,
+            "cached_results": workspace.technical_results,
+            "next_turn": next_turn,
+            "tool_call_count": tool_call_count,
+            "reflection_required": reflection_required,
+            "reflection_seen": reflection_seen,
+            "last_reflection": last_reflection or {},
+            "web_search_queries": web_search_queries,
+            "web_read_count": web_read_count,
+            "pending_final_report": pending_final_report or {},
+        }
+
+    def record_external_coverage(call: LlmToolCall, observation: ToolObservation) -> None:
+        nonlocal web_read_count
+        if observation.ok and call.name == "web_search":
+            queries = (observation.result or {}).get("queries")
+            if isinstance(queries, list):
+                for item in queries:
+                    query = str(item).strip()
+                    if query:
+                        web_search_queries.append(query)
+            else:
+                query = str((observation.result or {}).get("query") or call.arguments.get("query") or "").strip()
+                if query:
+                    web_search_queries.append(query)
+        if observation.ok and call.name == "opencli_command":
+            site = str(call.arguments.get("site", "")).strip()
+            command = str(call.arguments.get("command", "")).strip()
+            positionals = call.arguments.get("positionals") or []
+            options = call.arguments.get("options") or {}
+            query = " ".join(
+                [site, command]
+                + [str(item) for item in positionals if str(item).strip()]
+                + [str(value) for value in options.values() if str(value).strip()]
+            ).strip()
+            if query:
+                web_search_queries.append(query)
+            result_site = str((observation.result or {}).get("site") or site)
+            result_command = str((observation.result or {}).get("command") or command)
+            if result_site == "web" and result_command == "read":
+                web_read_count += 1
+        if observation.ok and call.name == "web_read":
+            web_read_count += 1
+
+    def execute_call_batch(calls: list[LlmToolCall]) -> list[tuple[LlmToolCall, ToolObservation, float]]:
+        if len(calls) <= 1 or not all(externally_slow_tool(call.name) for call in calls):
+            output: list[tuple[LlmToolCall, ToolObservation, float]] = []
+            for call in calls:
+                started = time.monotonic()
+                observation = execute_tool_call(call, registry, workspace)
+                output.append((call, observation, time.monotonic() - started))
+            return output
+        output_by_id: dict[str, tuple[LlmToolCall, ToolObservation, float]] = {}
+        max_workers = min(6, len(calls))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {}
+            for call in calls:
+                started = time.monotonic()
+                future = executor.submit(execute_tool_call, call, registry, workspace)
+                future_map[future] = (call, started)
+            for future in as_completed(future_map):
+                call, started = future_map[future]
+                try:
+                    observation = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    observation = ToolObservation(
+                        call_id=call.id,
+                        tool_name=call.name,
+                        ok=False,
+                        error_type="tool_error",
+                        message=str(exc),
+                    )
+                output_by_id[call.id] = (call, observation, time.monotonic() - started)
+        return [output_by_id[call.id] for call in calls]
 
     trace.write("agent_start", {"goal": goal, "model": model, "tools": list(registry)})
     trace_status = str(trace.path) if trace.enabled else "disabled"
@@ -468,9 +611,9 @@ async def run_tool_agent_events(
             f"goal={goal[:160]}"
         ),
     )
-    yield tool_agent_event("agent_start", "开始 AI 工具调用分析", run_id=run_id)
+    yield tool_agent_event("agent_start", "继续 AI 工具调用分析" if resume_state else "开始 AI 工具调用分析", run_id=run_id)
 
-    for turn in range(1, max_turns + 1):
+    for turn in range(start_turn, max_turns + 1):
         trace.write("llm_request", {"turn": turn, "message_count": len(messages)})
         agent_log(run_id, f"llm_request messages={len(messages)}", turn=turn)
         yield tool_agent_event("llm_turn", "AI 正在决定下一步", run_id=run_id, turn=turn)
@@ -484,8 +627,23 @@ async def run_tool_agent_events(
             if reflection_required and not detail:
                 detail = "工具 observation 后必须先输出 observation_reflection"
             trace.write("error", {"turn": turn, "error": detail})
-            agent_log(run_id, f"llm_response_parse_failed error={detail}", turn=turn, level="ERROR")
-            yield tool_agent_event("error", "LLM 工具调用输出无法解析", run_id=run_id, error=detail)
+            agent_log(run_id, f"llm_response_parse_failed paused error={detail}", turn=turn, level="ERROR")
+            messages.append({
+                "role": "user",
+                "content": (
+                    "上一轮输出无法解析，运行已暂停并保留上下文。继续时请只输出一个合法 JSON 对象，"
+                    "不要 Markdown，不要 channel 标记。根据当前证据继续：如果还缺信息输出 tool_calls，"
+                    "如果刚收到工具 observation 输出 observation_reflection，如果信息足够输出 final_report。"
+                ),
+            })
+            yield tool_agent_event(
+                "paused",
+                "LLM 输出无法解析，已暂停并保存可继续状态",
+                run_id=run_id,
+                turn=turn,
+                error=detail,
+                checkpoint=checkpoint(turn + 1),
+            )
             return
 
         trace.write("llm_response", {"turn": turn, "type": step.type, "raw_text": step.raw_text})
@@ -524,6 +682,28 @@ async def run_tool_agent_events(
                     "现在只输出一个合法 JSON 对象，type 必须是 observation_reflection；"
                     "不能输出 research_plan、tool_calls 或 final_report。"
                     "observation_reflection.next_action 只能是 continue_tools 或 final_report。"
+                ),
+            })
+            continue
+        if turn > 1 and step.type == "research_plan":
+            message = "research_plan 只能在第一轮输出，中途重新规划会丢失执行上下文"
+            trace.write("error", {"turn": turn, "error": message, "raw_text": step.raw_text})
+            agent_log(run_id, message, turn=turn, level="WARN")
+            yield tool_agent_event(
+                "protocol_repair",
+                "LLM 中途重新输出研究计划，已要求回到当前执行状态",
+                run_id=run_id,
+                turn=turn,
+                warning=message,
+                raw_text=step.raw_text,
+            )
+            messages.append({
+                "role": "user",
+                "content": (
+                    "协议纠偏：research_plan 只能在第一轮输出，当前已经在执行阶段。"
+                    "请忽略上一条 research_plan，基于已有 messages 和 observations 继续。"
+                    "如果还缺信息，输出 tool_calls；如果刚收到工具 observation，输出 observation_reflection；"
+                    "如果证据足够，输出 final_report。只能输出一个合法 JSON 对象。"
                 ),
             })
             continue
@@ -715,6 +895,9 @@ async def run_tool_agent_events(
             )
 
         if step.type == "final_report":
+            if pending_final_report:
+                step.final_report = merge_final_report_patch(pending_final_report, step.final_report)
+                pending_final_report = None
             if not reflection_seen:
                 message = "final_report 前必须至少有一次 observation_reflection"
                 trace.write("error", {"turn": turn, "error": message, "raw_text": step.raw_text})
@@ -835,11 +1018,12 @@ async def run_tool_agent_events(
                 )
                 yield tool_agent_event(
                     "coverage_gate",
-                    "最终报告暂缓：未逐项覆盖每个 ETF 建议",
+                    "最终报告暂缓：报告缺少部分 ETF 的逐项建议",
                     run_id=run_id,
                     turn=turn,
                     missing_holding_analysis=missing_holding_analysis,
                 )
+                pending_final_report = normalize_report_payload(step.final_report)
                 messages.append({"role": "user", "content": build_holding_analysis_gate_prompt(missing_holding_analysis)})
                 continue
             llm_context = workspace.build_llm_context()
@@ -881,6 +1065,7 @@ async def run_tool_agent_events(
             yield tool_agent_event("done", "Agent 分析完成", run_id=run_id, snapshot=snapshot)
             return
 
+        executable_calls: list[LlmToolCall] = []
         for call in step.tool_calls:
             tool_call_count += 1
             if tool_call_count > max_calls:
@@ -904,9 +1089,12 @@ async def run_tool_agent_events(
                 tool=call.name,
                 arguments=call.arguments,
             )
-            started = time.monotonic()
-            observation = execute_tool_call(call, registry, workspace)
-            elapsed = time.monotonic() - started
+            executable_calls.append(call)
+
+        if len(executable_calls) > 1 and all(externally_slow_tool(call.name) for call in executable_calls):
+            agent_log(run_id, f"parallel_tool_batch count={len(executable_calls)}", turn=turn)
+
+        for call, observation, elapsed in execute_call_batch(executable_calls):
             trace.write("tool_observation", {"turn": turn, "observation": observation.model_dump()})
             observation_log_level = "INFO" if observation.ok else "WARN"
             agent_log(
@@ -931,26 +1119,7 @@ async def run_tool_agent_events(
                 message=observation.message,
                 observation=observation.model_dump(),
             )
-            if observation.ok and call.name == "web_search":
-                query = str((observation.result or {}).get("query") or call.arguments.get("query") or "").strip()
-                if query:
-                    web_search_queries.append(query)
-            if observation.ok and call.name == "opencli_command":
-                site = str(call.arguments.get("site", "")).strip()
-                command = str(call.arguments.get("command", "")).strip()
-                positionals = call.arguments.get("positionals") or []
-                options = call.arguments.get("options") or {}
-                query = " ".join(
-                    [site, command]
-                    + [str(item) for item in positionals if str(item).strip()]
-                    + [str(value) for value in options.values() if str(value).strip()]
-                ).strip()
-                if query:
-                    web_search_queries.append(query)
-                if site == "web" and command == "read":
-                    web_read_count += 1
-            if observation.ok and call.name == "web_read":
-                web_read_count += 1
+            record_external_coverage(call, observation)
             messages.append(tool_observation_message(call, observation))
 
         if step.type == "tool_calls":

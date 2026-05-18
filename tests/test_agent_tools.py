@@ -218,6 +218,53 @@ class TestAgentTools(unittest.TestCase):
         self.assertIn("正文行情", read["content"])
         self.assertNotIn("noise", read["content"])
 
+    def test_web_search_splits_multi_holding_query(self):
+        config = deepcopy(self.config)
+        config["agent"]["allow_external_search_tools"] = True
+        config["search"]["providers"]["opencli"] = {"command_path": "/opt/bin/opencli"}
+        workspace = AgentWorkspace(config, holdings=self.holdings)
+        registry = build_agent_tool_registry(config)
+
+        def fake_run(cmd, **kwargs):
+            query = cmd[3]
+            return MagicMock(
+                returncode=0,
+                stdout=f'[{{"title":"{query}","url":"https://example.com","snippet":"摘要"}}]',
+                stderr="",
+            )
+
+        with patch("stock_assistant.integrations.search.subprocess.run", side_effect=fake_run) as run:
+            search = registry["web_search"].handler(
+                registry["web_search"].args_model(query="510300 沪深300ETF, 511880 货币ETF 近期行情与驱动因素"),
+                workspace,
+            )
+
+        self.assertTrue(search["split"])
+        self.assertEqual(search["queries"], [
+            "510300 沪深300ETF 近期 表现 驱动因素",
+            "511880 货币ETF 近期 表现 驱动因素",
+        ])
+        self.assertEqual(search["count"], 2)
+        self.assertEqual(run.call_count, 2)
+
+    def test_web_read_marks_low_quality_login_pages(self):
+        config = deepcopy(self.config)
+        config["agent"]["allow_external_search_tools"] = True
+        workspace = AgentWorkspace(config, holdings=self.holdings)
+        registry = build_agent_tool_registry(config)
+
+        with patch(
+            "stock_assistant.agents.agent_tools.fetch_url_bytes",
+            return_value=("请登录 注册 验证码 扫码 立即登录".encode("utf-8"), "text/html", "https://xueqiu.com/a"),
+        ):
+            read = registry["web_read"].handler(
+                registry["web_read"].args_model(url="https://xueqiu.com/a"),
+                workspace,
+            )
+
+        self.assertEqual(read["content_quality"], "low")
+        self.assertIn("质量低", read["summary"])
+
     def test_opencli_command_tool_runs_allowed_read_command(self):
         config = deepcopy(self.config)
         config["agent"]["allow_external_search_tools"] = True
@@ -248,6 +295,32 @@ class TestAgentTools(unittest.TestCase):
             run.call_args.args[0],
             ["/opt/bin/opencli", "eastmoney", "quote", "510300", "-f", "json"],
         )
+
+    def test_opencli_quote_falls_back_for_index_symbol(self):
+        config = deepcopy(self.config)
+        config["agent"]["allow_external_search_tools"] = True
+        config["search"]["providers"]["opencli"] = {"command_path": "/opt/bin/opencli"}
+        workspace = AgentWorkspace(config, holdings=self.holdings)
+        registry = build_agent_tool_registry(config)
+
+        with patch("stock_assistant.agents.agent_tools.subprocess.run") as run:
+            run.side_effect = [
+                MagicMock(returncode=1, stdout="", stderr="not found"),
+                MagicMock(returncode=0, stdout='{"symbol":"HSI"}', stderr=""),
+            ]
+            result = registry["opencli_command"].handler(
+                registry["opencli_command"].args_model(
+                    site="eastmoney",
+                    command="quote",
+                    positionals=["HSI"],
+                    options={},
+                ),
+                workspace,
+            )
+
+        self.assertEqual(result["site"], "xueqiu")
+        self.assertEqual(result["command"], "stock")
+        self.assertEqual(run.call_count, 2)
 
     def test_opencli_command_tool_rejects_unallowed_command(self):
         config = deepcopy(self.config)

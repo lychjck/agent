@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { RefreshCw, TrendingUp, TrendingDown, Activity, DollarSign, Wallet, ShieldAlert, Cpu, Landmark, LineChart, PieChart as PieChartIcon, RotateCcw, Box, ArrowDownUp, Database, Layers, AlertTriangle, CheckCircle2, ChevronRight, FileText, Wrench, MessageSquare, Braces } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, AreaChart, Area, XAxis, YAxis, CartesianGrid } from 'recharts';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
+const ACTIVE_AGENT_RUN_KEY = 'stock.activeAgentRunId';
 
 type AgentTraceEntry = {
   id: string;
@@ -226,6 +227,7 @@ export default function App() {
   const [analysisTrace, setAnalysisTrace] = useState<AgentTraceEntry[]>([]);
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [currentStep, setCurrentStep] = useState(0);
+  const [agentRunStatus, setAgentRunStatus] = useState('');
   const [selectedModel, setSelectedModel] = useState('deepseek-v4-pro');
   const [technicalResults, setTechnicalResults] = useState<any[] | null>(null);
   
@@ -250,10 +252,17 @@ export default function App() {
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [klines, setKlines] = useState<any[]>([]);
   const [klineLoading, setKlineLoading] = useState(false);
+  const runPollTimerRef = useRef<number | null>(null);
+  const runEventIndexRef = useRef(0);
 
   useEffect(() => {
     fetchHoldings();
     fetchProfile(false);
+    recoverAgentRun();
+
+    return () => {
+      stopAgentPolling();
+    };
   }, []);
 
   useEffect(() => {
@@ -316,20 +325,165 @@ export default function App() {
     setKlineLoading(false);
   };
 
+  const applySnapshot = (snapshot: AgentPayload | null) => {
+    if (!snapshot) return;
+    if (snapshot.technical_results) {
+      setTechnicalResults(snapshot.technical_results as unknown[]);
+    }
+    if (snapshot.agent_report) {
+      setAiData(snapshot.agent_report);
+      setHasError(false);
+      setCurrentStep(4);
+    }
+  };
+
+  const applyAgentPayload = (payload: AgentPayload) => {
+    const entry = buildAgentTraceEntry(payload);
+    setAnalysisTrace(prev => [...prev, entry]);
+    setSelectedTraceId(entry.id);
+
+    if (payload.step) {
+      setCurrentStep(agentStepNumber(textValue(payload.step)));
+    }
+    if (payload.technical_results) {
+      setTechnicalResults(payload.technical_results as unknown[]);
+    }
+    const snapshot = isRecord(payload.snapshot) ? payload.snapshot : null;
+    applySnapshot(snapshot);
+    if (payload.result) {
+      setAiData(payload.result);
+      setHasError(false);
+    }
+    if (payload.error) {
+      setHasError(true);
+    }
+  };
+
+  const stopAgentPolling = () => {
+    if (runPollTimerRef.current !== null) {
+      window.clearTimeout(runPollTimerRef.current);
+      runPollTimerRef.current = null;
+    }
+  };
+
+  const finishRecoveredRun = (snapshot: AgentPayload | null = null) => {
+    stopAgentPolling();
+    window.localStorage.removeItem(ACTIVE_AGENT_RUN_KEY);
+    setAnalyzing(false);
+    applySnapshot(snapshot);
+  };
+
+  const pollAgentRun = async (runId: string) => {
+    stopAgentPolling();
+    try {
+      const res = await fetch(`/api/agent/run/${encodeURIComponent(runId)}?after=${runEventIndexRef.current}&_t=${Date.now()}`);
+      if (res.status === 404) {
+        window.localStorage.removeItem(ACTIVE_AGENT_RUN_KEY);
+        setAnalyzing(false);
+        await fetchLatestAgentSnapshot();
+        return;
+      }
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(payload.detail || `HTTP ${res.status}`);
+      }
+      const payload = await res.json();
+      const events = Array.isArray(payload.events) ? payload.events : [];
+      events.forEach((event: unknown) => {
+        if (isRecord(event)) applyAgentPayload(event);
+      });
+      runEventIndexRef.current = Number(payload.next_index || runEventIndexRef.current);
+      const status = textValue(payload.status);
+      setAgentRunStatus(status);
+      if (status === 'running' || status === 'queued') {
+        setAnalyzing(true);
+        runPollTimerRef.current = window.setTimeout(() => pollAgentRun(runId), 1200);
+        return;
+      }
+      if (status === 'paused') {
+        setAnalyzing(false);
+        setHasError(true);
+        return;
+      }
+      if (status === 'completed') {
+        finishRecoveredRun(isRecord(payload.snapshot) ? payload.snapshot : null);
+        return;
+      }
+      finishRecoveredRun(null);
+      if (payload.error) {
+        setHasError(true);
+      }
+    } catch (err: any) {
+      console.error(err);
+      const entry = buildAgentTraceEntry({ step: 'error', error: err.message, status: '恢复 AI 分析状态失败' });
+      setAnalysisTrace(prev => [...prev, entry]);
+      setSelectedTraceId(entry.id);
+      setHasError(true);
+      runPollTimerRef.current = window.setTimeout(() => pollAgentRun(runId), 3000);
+    }
+  };
+
+  const fetchLatestAgentSnapshot = async () => {
+    try {
+      const res = await fetch(`/api/agent/latest?_t=${Date.now()}`);
+      if (!res.ok) return;
+      const payload = await res.json();
+      const snapshot = isRecord(payload.snapshot) ? payload.snapshot : null;
+      applySnapshot(snapshot);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const recoverAgentRun = async () => {
+    const runId = window.localStorage.getItem(ACTIVE_AGENT_RUN_KEY);
+    if (!runId) {
+      await fetchLatestAgentSnapshot();
+      return;
+    }
+    setActiveTab('analysis');
+    setAnalyzing(true);
+    setHasError(false);
+    runEventIndexRef.current = 0;
+    setAnalysisTrace([]);
+    setSelectedTraceId(null);
+    await pollAgentRun(runId);
+  };
+
   const handleAnalyze = async (resumeData: any[] | null = null) => {
     setActiveTab('analysis');
     setAnalyzing(true);
     setHasError(false);
+    const activeRunId = window.localStorage.getItem(ACTIVE_AGENT_RUN_KEY);
+    if (activeRunId && agentRunStatus === 'paused') {
+      try {
+        const response = await fetch(`/api/agent/run/${encodeURIComponent(activeRunId)}/resume`, { method: 'POST' });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(payload.detail || `HTTP ${response.status}`);
+        }
+        await pollAgentRun(activeRunId);
+      } catch (err: any) {
+        console.error(err);
+        const entry = buildAgentTraceEntry({ step: 'error', error: err.message, status: '恢复 AI 分析失败' });
+        setAnalysisTrace(prev => [...prev, entry]);
+        setSelectedTraceId(entry.id);
+        setHasError(true);
+        setAnalyzing(false);
+      }
+      return;
+    }
     if (!resumeData) {
       setAiData(null);
       setAnalysisTrace([]);
       setSelectedTraceId(null);
       setCurrentStep(0);
       setTechnicalResults(null);
+      setAgentRunStatus('');
     }
     
     try {
-      const response = await fetch('/api/agent/run/stream', {
+      const response = await fetch('/api/agent/run/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -339,77 +493,25 @@ export default function App() {
           model: selectedModel
         })
       });
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-
-      if (!reader) return;
-
-      const handleAgentPayload = (payload: AgentPayload) => {
-        const entry = buildAgentTraceEntry(payload);
-        setAnalysisTrace(prev => [...prev, entry]);
-        setSelectedTraceId(entry.id);
-
-        if (payload.step) {
-          setCurrentStep(agentStepNumber(textValue(payload.step)));
-        }
-        if (payload.technical_results) {
-          setTechnicalResults(payload.technical_results as unknown[]);
-        }
-        const snapshot = isRecord(payload.snapshot) ? payload.snapshot : null;
-        if (snapshot?.technical_results) {
-          setTechnicalResults(snapshot.technical_results as unknown[]);
-        }
-        if (snapshot?.agent_report) {
-          setAiData(snapshot.agent_report);
-          setHasError(false);
-        }
-        if (payload.result) {
-          setAiData(payload.result);
-          setHasError(false);
-        }
-        if (payload.error) {
-          setHasError(true);
-        }
-      };
-
-      const parseSseBlock = (block: string) => {
-        const data = block
-          .split('\n')
-          .filter(line => line.startsWith('data:'))
-          .map(line => line.replace(/^data:\s?/, ''))
-          .join('\n')
-          .trim();
-        if (!data) return;
-        try {
-          const parsed = JSON.parse(data);
-          if (isRecord(parsed)) {
-            handleAgentPayload(parsed);
-          }
-        } catch (e) {
-          console.error('Failed to parse SSE block:', block, e);
-        }
-      };
-
-      let buffer = '';
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const blocks = buffer.split('\n\n');
-        buffer = blocks.pop() || '';
-        blocks.forEach(parseSseBlock);
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail || `HTTP ${response.status}`);
       }
-      buffer += decoder.decode();
-      if (buffer.trim()) parseSseBlock(buffer);
+      const payload = await response.json();
+      const runId = textValue(payload.run_id);
+      if (!runId) throw new Error('后端没有返回 run_id');
+      window.localStorage.setItem(ACTIVE_AGENT_RUN_KEY, runId);
+      setAgentRunStatus('queued');
+      runEventIndexRef.current = 0;
+      await pollAgentRun(runId);
     } catch (err: any) {
       console.error(err);
       const entry = buildAgentTraceEntry({ step: 'error', error: err.message, status: '分析过程中发生意外错误' });
       setAnalysisTrace(prev => [...prev, entry]);
       setSelectedTraceId(entry.id);
       setHasError(true);
+      setAnalyzing(false);
     }
-    setAnalyzing(false);
   };
 
   const etfHoldings = [...(data?.holdings?.filter((h: any) => h.asset_type === 'etf') || [])].sort((a, b) => {
@@ -475,7 +577,7 @@ export default function App() {
             >
               <div className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300 ease-out"></div>
               {analyzing ? <RefreshCw className="animate-spin w-5 h-5 relative z-10" /> : <Cpu className="w-5 h-5 relative z-10" />}
-              <span className="relative z-10">{analyzing ? '诊断模型运行中...' : '一键启动 AI 诊断'}</span>
+              <span className="relative z-10">{analyzing ? '诊断模型运行中...' : agentRunStatus === 'paused' ? '从中断处继续' : '一键启动 AI 诊断'}</span>
             </button>
           </div>
         </header>

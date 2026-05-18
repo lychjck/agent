@@ -3,8 +3,12 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pathlib import Path
+import asyncio
+import datetime as dt
 import json
 import httpx
+import threading
+import uuid
 
 from stock_assistant import (
     load_config, load_env_file, ensure_dirs, fetch_tzzb_holdings,
@@ -61,6 +65,98 @@ class AgentRunRequest(BaseModel):
     model: str | None = None
     mode: str = "pipeline"
     goal: str | None = None
+    resume_state: dict | None = None
+
+
+agent_runs: dict[str, dict] = {}
+agent_runs_lock = threading.Lock()
+MAX_AGENT_RUN_EVENTS = 2000
+
+
+def append_agent_run_event(run_id: str, event: dict) -> None:
+    with agent_runs_lock:
+        record = agent_runs.get(run_id)
+        if record is None:
+            return
+        events = record.setdefault("events", [])
+        event_payload = dict(event)
+        event_payload.setdefault("run_id", run_id)
+        event_payload["event_index"] = len(events)
+        events.append(event_payload)
+        if len(events) > MAX_AGENT_RUN_EVENTS:
+            del events[: len(events) - MAX_AGENT_RUN_EVENTS]
+            for index, item in enumerate(events):
+                item["event_index"] = index
+        record["updated_at"] = dt.datetime.now().isoformat(timespec="seconds")
+
+
+def update_agent_run(run_id: str, **updates: object) -> None:
+    with agent_runs_lock:
+        record = agent_runs.get(run_id)
+        if record is None:
+            return
+        record.update(updates)
+        record["updated_at"] = dt.datetime.now().isoformat(timespec="seconds")
+
+
+async def run_agent_job(run_id: str, req: AgentRunRequest) -> None:
+    update_agent_run(run_id, status="running")
+    try:
+        if req.mode == "tool_agent" or (
+            req.mode == "default" and config_bool(config.get("agent", {}).get("tool_agent_default", False))
+        ):
+            goal = req.goal or "分析当前持仓，给出组合风险、每个 ETF 的建议和需要确认的问题"
+            event_iter = run_tool_agent_events(
+                config,
+                goal=goal,
+                cached_results=req.cached_results,
+                model_override=req.model,
+                resume_state=req.resume_state,
+            )
+        else:
+            event_iter = run_agent_analysis_events(
+                config,
+                cached_results=req.cached_results,
+                model_override=req.model,
+            )
+
+        async for event in event_iter:
+            append_agent_run_event(run_id, event)
+            if event.get("step") == "error":
+                update_agent_run(
+                    run_id,
+                    status="error",
+                    error=str(event.get("error") or event.get("status") or "agent failed"),
+                )
+            if event.get("step") == "paused":
+                update_agent_run(
+                    run_id,
+                    status="paused",
+                    error=str(event.get("error") or event.get("status") or "agent paused"),
+                    checkpoint=event.get("checkpoint"),
+                    request=req.model_dump(),
+                )
+            if event.get("step") == "done":
+                snapshot = event.get("snapshot")
+                if isinstance(snapshot, dict):
+                    update_agent_run(run_id, snapshot=snapshot)
+                update_agent_run(run_id, status="completed")
+        with agent_runs_lock:
+            status = agent_runs.get(run_id, {}).get("status")
+        if status == "running":
+            update_agent_run(run_id, status="completed")
+    except asyncio.CancelledError:
+        update_agent_run(run_id, status="cancelled", error="agent run cancelled")
+        append_agent_run_event(run_id, {"step": "error", "status": "执行已取消", "error": "agent run cancelled"})
+        raise
+    except Exception as e:  # noqa: BLE001
+        update_agent_run(run_id, status="error", error=str(e))
+        log(f"agent job 失败 run_id={run_id}: {e}", level="ERROR", name="api")
+        append_agent_run_event(run_id, {"step": "error", "status": "Agent 后台执行失败", "error": str(e)})
+
+
+def run_agent_job_in_thread(run_id: str, req: AgentRunRequest) -> None:
+    asyncio.run(run_agent_job(run_id, req))
 
 @app.get("/api/holdings")
 def get_holdings():
@@ -244,6 +340,78 @@ async def run_agent_stream(req: AgentRunRequest = AgentRunRequest()):
             yield sse_payload({"step": "error", "error": str(e)})
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.post("/api/agent/run/start")
+async def start_agent_run(req: AgentRunRequest = AgentRunRequest()):
+    run_id = f"agent-ui-{dt.datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:8]}"
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    with agent_runs_lock:
+        agent_runs[run_id] = {
+            "run_id": run_id,
+            "status": "queued",
+            "events": [],
+            "snapshot": None,
+            "error": "",
+            "started_at": now,
+            "updated_at": now,
+            "thread": None,
+        }
+    thread = threading.Thread(target=run_agent_job_in_thread, args=(run_id, req), daemon=True)
+    with agent_runs_lock:
+        agent_runs[run_id]["thread"] = thread
+    thread.start()
+    return {"run_id": run_id, "status": "queued"}
+
+
+@app.post("/api/agent/run/{run_id}/resume")
+async def resume_agent_run(run_id: str):
+    with agent_runs_lock:
+        record = agent_runs.get(run_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="agent run not found")
+        if record.get("status") != "paused":
+            return {"run_id": run_id, "status": record.get("status")}
+        checkpoint = record.get("checkpoint")
+        request_payload = dict(record.get("request") or {})
+        if not isinstance(checkpoint, dict):
+            raise HTTPException(status_code=409, detail="agent run has no checkpoint")
+        request_payload["resume_state"] = checkpoint
+        req = AgentRunRequest.model_validate(request_payload)
+        record["status"] = "queued"
+        record["error"] = ""
+        record["updated_at"] = dt.datetime.now().isoformat(timespec="seconds")
+    thread = threading.Thread(target=run_agent_job_in_thread, args=(run_id, req), daemon=True)
+    with agent_runs_lock:
+        agent_runs[run_id]["thread"] = thread
+    thread.start()
+    return {"run_id": run_id, "status": "queued"}
+
+
+@app.get("/api/agent/run/{run_id}")
+def get_agent_run(run_id: str, after: int = 0):
+    start = max(0, int(after or 0))
+    with agent_runs_lock:
+        record = agent_runs.get(run_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="agent run not found")
+        events = list(record.get("events", []))
+        visible_events = events[start:]
+        snapshot = record.get("snapshot")
+        response = {
+            "run_id": run_id,
+            "status": record.get("status"),
+            "events": visible_events,
+            "next_index": start + len(visible_events),
+            "snapshot": snapshot,
+            "error": record.get("error", ""),
+            "started_at": record.get("started_at"),
+            "updated_at": record.get("updated_at"),
+        }
+    return {
+        **response,
+    }
+
 
 @app.post("/api/agent/run")
 async def run_agent(req: AgentRunRequest = AgentRunRequest()):

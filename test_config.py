@@ -14,7 +14,6 @@ if _EXAMPLE_CONFIG_PATH.exists():
     with _EXAMPLE_CONFIG_PATH.open("rb") as fh:
         DEFAULTS = tomllib.load(fh)
 else:
-    # 极简兜底，防止测试在没有文件时完全崩溃
     DEFAULTS = {
         "paths": {
             "download_dir": "downloads",
@@ -41,10 +40,7 @@ def ensure_dirs(config: dict[str, Any]) -> None:
             (ROOT / str(val)).expanduser().mkdir(parents=True, exist_ok=True)
     if config_bool(config.get("skills", {}).get("enabled", True)):
         install_dir = config.get("skills", {}).get("install_dir", "data/skills")
-        (ROOT / str(install_dir)).expanduser().mkdir(
-            parents=True,
-            exist_ok=True,
-        )
+        (ROOT / str(install_dir)).expanduser().mkdir(parents=True, exist_ok=True)
 
 def policy_value(config: dict[str, Any], key: str, fallback: Any = None) -> Any:
     if key in config.get("policy", {}):

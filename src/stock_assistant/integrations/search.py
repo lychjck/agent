@@ -485,7 +485,7 @@ def classification_llm_config(config: dict[str, Any]) -> dict[str, Any]:
         "api_key": "",
         "temperature": 0.0,
         "timeout_seconds": 120,
-        "max_tokens": 2048,
+        "max_tokens": 8192,
         "stream": False,
         "disable_thinking": True,
         "reasoning_effort": "",

@@ -29,9 +29,10 @@ class LlmToolStep(BaseModel):
 def strip_json_markdown(text: str) -> str:
     clean = text.strip()
     clean = clean.replace("\ufffd", " ")
-    clean = re.sub(r"<\|channel\|?>\s*(analysis|commentary|final|assistant|thought)?", "", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"<\|/?(message|assistant|analysis|commentary|final|end)\|?>", "", clean, flags=re.IGNORECASE)
-    clean = clean.replace("<channel|>", "").strip()
+    clean = re.sub(r"(?m)^\s*---\s*$", "", clean)
+    clean = re.sub(r"<\|channel\|?>\s*[\w-]*", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"<\|/?[\w-]+\|?>", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"<[\w-]+\|>", "", clean, flags=re.IGNORECASE).strip()
     if clean.startswith("```json"):
         clean = clean[7:].strip()
     elif clean.startswith("```"):
@@ -39,6 +40,132 @@ def strip_json_markdown(text: str) -> str:
     if clean.endswith("```"):
         clean = clean[:-3].strip()
     return clean
+
+
+def remove_control_chars(text: str) -> str:
+    return "".join(
+        char if char in "\n\r\t" or ord(char) >= 32 else " "
+        for char in text
+    )
+
+
+def regex_json_string(text: str, key: str) -> str:
+    match = re.search(rf'"{re.escape(key)}"\s*:\s*"((?:\\.|[^"\\])*)"', text, flags=re.DOTALL)
+    if not match:
+        return ""
+    try:
+        return json.loads(f'"{match.group(1)}"')
+    except json.JSONDecodeError:
+        return match.group(1).replace('\\"', '"').strip()
+
+
+def regex_json_string_partial(text: str, key: str) -> str:
+    value = regex_json_string(text, key)
+    if value:
+        return value
+    match = re.search(rf'"{re.escape(key)}"\s*:\s*"([^"\n\r}}]*)', text, flags=re.DOTALL)
+    if not match:
+        return ""
+    return match.group(1).replace('\\"', '"').strip()
+
+
+def salvage_tool_calls(text: str, reasoning_summary: str) -> dict[str, Any] | None:
+    calls: list[dict[str, Any]] = []
+    for match in re.finditer(r'"name"\s*:\s*"([^"]+)"', text):
+        name = match.group(1)
+        tail = text[match.end():]
+        arguments: dict[str, Any] = {}
+        if name == "web_read":
+            url = regex_json_string_partial(tail, "url")
+            if url:
+                arguments["url"] = url
+        elif name == "web_search":
+            query = regex_json_string_partial(tail, "query")
+            if query:
+                arguments["query"] = query
+        elif name == "opencli_command":
+            site = regex_json_string_partial(tail, "site")
+            command = regex_json_string_partial(tail, "command")
+            if site:
+                arguments["site"] = site
+            if command:
+                arguments["command"] = command
+        else:
+            arguments = {}
+        if arguments or name in {"get_current_holdings", "get_portfolio_profile", "load_snapshot_summary", "compare_snapshots"}:
+            calls.append({
+                "id": f"call_salvage_{len(calls) + 1:03d}",
+                "name": name,
+                "arguments": arguments,
+            })
+    if not calls:
+        return None
+    return {
+        "type": "tool_calls",
+        "reasoning_summary": reasoning_summary or "模型输出 tool_calls JSON 损坏，已从文本中恢复可执行工具调用。",
+        "tool_calls": calls,
+        "thinking_trace": {"recovery": "salvaged_malformed_tool_calls"},
+    }
+
+
+def salvage_tool_payload(text: str) -> dict[str, Any] | None:
+    step_type = regex_json_string(text, "type")
+    if step_type == "final_report_patch":
+        return {
+            "type": "final_report",
+            "reasoning_summary": regex_json_string(text, "reasoning_summary")
+            or "模型输出 final_report_patch JSON 损坏，已恢复为空报告补丁并要求下一轮重试。",
+            "report": {
+                "holding_analysis": [],
+                "limitations": ["上一轮 final_report_patch JSON 损坏，未能恢复逐项建议，需要继续补齐。"],
+            },
+            "thinking_trace": {"recovery": "salvaged_malformed_final_report_patch"},
+        }
+    if step_type not in {"observation_reflection", "research_plan", "tool_calls"}:
+        return None
+    reasoning_summary = regex_json_string(text, "reasoning_summary")
+    if step_type == "tool_calls":
+        salvaged_calls = salvage_tool_calls(text, reasoning_summary)
+        if salvaged_calls:
+            return salvaged_calls
+        return {
+            "type": "observation_reflection",
+            "reasoning_summary": reasoning_summary or "模型输出 tool_calls JSON 损坏，已降级为反思步骤。",
+            "observation_reflection": {
+                "satisfied_needs": [],
+                "unsatisfied_needs": ["上一轮 tool_calls JSON 损坏且无法恢复具体参数，需重新决定下一步工具调用。"],
+                "observation_impact": "模型输出包含 tool_calls 意图，但 JSON 截断或参数损坏；系统已避免中断并要求下一轮重新决策。",
+                "next_action": "continue_tools",
+            },
+            "thinking_trace": {"recovery": "salvaged_malformed_tool_calls_as_reflection"},
+        }
+    if step_type == "observation_reflection":
+        next_action = regex_json_string(text, "next_action") or "continue_tools"
+        return {
+            "type": "observation_reflection",
+            "reasoning_summary": reasoning_summary or "模型输出 JSON 损坏，已降级保留反思步骤。",
+            "observation_reflection": {
+                "satisfied_needs": [],
+                "unsatisfied_needs": ["上一轮 observation_reflection JSON 损坏，需继续补足外部研究或重新决策。"],
+                "observation_impact": "模型输出包含 observation_reflection 意图，但 JSON 不完整或含非法标记；系统已恢复为最小合法反思。",
+                "next_action": next_action,
+            },
+            "thinking_trace": {
+                "known_facts": [],
+                "missing_capabilities": [],
+                "recovery": "salvaged_malformed_observation_reflection",
+            },
+        }
+    return {
+        "type": "research_plan",
+        "reasoning_summary": reasoning_summary or "模型输出 JSON 损坏，已降级保留研究计划步骤。",
+        "research_plan": {
+            "information_needs": [],
+            "available_tool_mapping": [],
+            "missing_capabilities": ["上一轮 research_plan JSON 损坏，需重新规划。"],
+        },
+        "thinking_trace": {"recovery": "salvaged_malformed_research_plan"},
+    }
 
 
 def extract_json_object(text: str) -> dict[str, Any]:
@@ -56,7 +183,13 @@ def extract_json_object(text: str) -> dict[str, Any]:
         if isinstance(payload, dict):
             keys = set(payload)
             score = 0
-            if payload.get("type") in {"research_plan", "tool_calls", "observation_reflection", "final_report"}:
+            if payload.get("type") in {
+                "research_plan",
+                "tool_calls",
+                "observation_reflection",
+                "final_report",
+                "final_report_patch",
+            }:
                 score += 100
             if keys & {"tool_calls", "tool_call", "final_report", "report", "research_plan", "observation_reflection"}:
                 score += 50
@@ -74,11 +207,16 @@ def extract_json_object(text: str) -> dict[str, Any]:
 
 
 def load_json_object(text: str) -> dict[str, Any]:
-    clean = strip_json_markdown(text)
+    clean = remove_control_chars(strip_json_markdown(text))
     try:
         payload = json.loads(clean)
     except json.JSONDecodeError:
-        payload = extract_json_object(clean)
+        try:
+            payload = extract_json_object(clean)
+        except json.JSONDecodeError:
+            payload = salvage_tool_payload(clean)
+            if payload is None:
+                raise
     if not isinstance(payload, dict):
         raise ValueError("LLM tool step JSON 顶层必须是对象")
     return payload
@@ -88,6 +226,8 @@ def infer_step_type(payload: dict[str, Any]) -> str:
     explicit = str(payload.get("type", "")).strip()
     if explicit in {"research_plan", "tool_calls", "observation_reflection", "final_report"}:
         return explicit
+    if explicit == "final_report_patch":
+        return "final_report"
     if "observation_reflection" in payload or "satisfied_needs" in payload or "unsatisfied_needs" in payload:
         return "observation_reflection"
     if "research_plan" in payload or "information_needs" in payload or "missing_capabilities" in payload:
@@ -133,6 +273,8 @@ def normalize_final_report(payload: dict[str, Any]) -> dict[str, Any]:
         report = payload["final_report"]
     elif "report" in payload:
         report = payload["report"]
+    elif "patch_content" in payload:
+        report = payload["patch_content"]
     else:
         report = payload
     if not isinstance(report, dict):
