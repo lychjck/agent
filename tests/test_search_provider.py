@@ -6,6 +6,7 @@ from stock_assistant import (
     build_search_provider,
     TavilySearchProvider,
     BraveSearchProvider,
+    OpenCliSearchProvider,
     score_classification_evidence
 )
 from stock_assistant.integrations.search import search_freshness_for_provider, search_result_evidence
@@ -72,9 +73,62 @@ class TestSearchProvider(unittest.TestCase):
             self.assertEqual(provider.api_key, "brave_key")
             self.assertEqual(provider.freshness, "pw")
 
+    def test_build_opencli_provider(self):
+        config = {
+            "search": {
+                "enabled": True,
+                "provider": "opencli",
+                "freshness": "year",
+                "providers": {
+                    "opencli": {
+                        "command_path": "/opt/bin/opencli",
+                        "site": "duckduckgo",
+                        "region": "cn-zh",
+                        "window": "background",
+                        "site_session": "ephemeral",
+                    }
+                }
+            }
+        }
+
+        provider = build_search_provider(config)
+
+        self.assertIsInstance(provider, OpenCliSearchProvider)
+        self.assertEqual(provider.command_path, "/opt/bin/opencli")
+        self.assertEqual(provider.site, "duckduckgo")
+        self.assertEqual(provider.region, "cn-zh")
+        self.assertEqual(provider.time_range, "y")
+
+    @patch("stock_assistant.integrations.search.subprocess.run")
+    def test_opencli_provider_parses_json_results(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='[{"rank": 1, "title": "证券ETF", "url": "https://example.com", "snippet": "跟踪证券公司指数"}]',
+            stderr="",
+        )
+        provider = OpenCliSearchProvider(
+            timeout_seconds=12,
+            command_path="/opt/bin/opencli",
+            region="cn-zh",
+            time_range="y",
+        )
+
+        results = provider.search("证券ETF 跟踪指数", 2)
+
+        self.assertEqual(results[0]["title"], "证券ETF")
+        self.assertEqual(results[0]["url"], "https://example.com")
+        self.assertEqual(results[0]["source"], "opencli:duckduckgo")
+        mock_run.assert_called_once()
+        args = mock_run.call_args.args[0]
+        self.assertIn("--region", args)
+        self.assertIn("cn-zh", args)
+        self.assertIn("--time", args)
+        self.assertIn("y", args)
+
     def test_search_freshness_mapping(self):
         self.assertEqual(search_freshness_for_provider("tavily", {"search": {"freshness": "py"}}), "year")
         self.assertEqual(search_freshness_for_provider("brave", {"search": {"freshness": "month"}}), "pm")
+        self.assertEqual(search_freshness_for_provider("opencli", {"search": {"freshness": "week"}}), "w")
         self.assertEqual(search_freshness_for_provider("tavily", {"search": {"freshness": "none"}}), "")
 
     def test_search_result_evidence_keeps_content(self):

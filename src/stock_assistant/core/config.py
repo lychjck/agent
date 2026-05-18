@@ -87,7 +87,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "search": {
         "enabled": False,
-        "provider": "manual_json",
+        "provider": "opencli",
         "cache_dir": str(ROOT / "data" / "research"),
         "timeout_seconds": 20,
         "max_results": 5,
@@ -109,7 +109,32 @@ DEFAULTS: dict[str, Any] = {
             "brave": {
                 "enabled": False,
                 "api_key_env": "BRAVE_SEARCH_API_KEY",
-            }
+            },
+            "opencli": {
+                "enabled": True,
+                "command_path": "opencli",
+                "site": "duckduckgo",
+                "command": "search",
+                "region": "cn-zh",
+                "lang": "",
+                "profile": "",
+                "window": "background",
+                "site_session": "ephemeral",
+                "allowed_commands": {
+                    "duckduckgo": "search,suggest",
+                    "google": "search,news,suggest,trends",
+                    "brave": "search",
+                    "yahoo": "search",
+                    "eastmoney": "announcement,convertible,etf,holders,index-board,kline,kuaixun,longhu,money-flow,northbound,quote,rank,sectors",
+                    "sinafinance": "news,stock",
+                    "xueqiu": "search,stock,kline,hot-stock",
+                    "yahoo-finance": "quote",
+                    "barchart": "quote,options,greeks",
+                    "bloomberg": "main,markets,economics,industries,tech,politics",
+                    "reuters": "search,article-detail",
+                    "web": "read",
+                },
+            },
         },
         "source_tiers": {
             "tier1": "sse.com.cn,szse.cn,csindex.com.cn,cnindex.com.cn",

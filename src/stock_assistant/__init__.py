@@ -23,7 +23,7 @@ from .core.memory import (
 from .core.models import Bar, Holding, InstrumentClassification, RiskFlag, CandidateAction, analysis_result_to_dict, holding_to_dict, bar_to_dict
 from .services.portfolio import generate_portfolio_observations, summarize_portfolio, value_map_to_pct
 from .services.report import report_markdown, write_report
-from .integrations.search import build_search_provider, suggest_classification_with_search, TavilySearchProvider, BraveSearchProvider, score_classification_evidence
+from .integrations.search import build_search_provider, suggest_classification_with_search, TavilySearchProvider, BraveSearchProvider, OpenCliSearchProvider, score_classification_evidence
 from .integrations.tzzb import extract_cookie_from_curl, fetch_tzzb_holdings, tzzb_stock_holding
 from .core.utils import extract_code, load_env_file, log, parse_number, pick_value
 
@@ -88,6 +88,6 @@ __all__ = [
     "parse_llm_tool_step", "LlmToolCall", "LlmToolStep",
     "agent_snapshot_fingerprint", "agent_snapshots_have_same_facts",
     "classification_from_config", "classify_holding", "load_cached_classification", "save_classification_cache", "classification_cache_is_fresh", "classification_cache_status",
-    "build_search_provider", "suggest_classification_with_search", "TavilySearchProvider", "BraveSearchProvider", "score_classification_evidence",
+    "build_search_provider", "suggest_classification_with_search", "TavilySearchProvider", "BraveSearchProvider", "OpenCliSearchProvider", "score_classification_evidence",
     "parse_holdings", "archive_holding_file", "report_markdown", "write_report", "run"
 ]

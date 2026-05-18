@@ -1,6 +1,8 @@
 import datetime as dt
 import json
 import os
+import shutil
+import subprocess
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -209,10 +211,120 @@ class BraveSearchProvider(SearchProvider):
             })
         return results
 
+class OpenCliSearchProvider(SearchProvider):
+    def __init__(
+        self,
+        timeout_seconds: int,
+        command_path: str = "opencli",
+        site: str = "duckduckgo",
+        command: str = "search",
+        region: str = "",
+        time_range: str = "",
+        lang: str = "",
+        profile: str = "",
+        window: str = "background",
+        site_session: str = "ephemeral",
+    ):
+        self.timeout_seconds = timeout_seconds
+        self.command_path = command_path
+        self.site = site
+        self.command = command
+        self.region = region
+        self.time_range = time_range
+        self.lang = lang
+        self.profile = profile
+        self.window = window
+        self.site_session = site_session
+
+    def search(self, query: str, max_results: int) -> list[dict[str, str]]:
+        if os.path.sep not in self.command_path and shutil.which(self.command_path) is None:
+            log(f"opencli search failed: command not found: {self.command_path}")
+            return []
+
+        args = [self.command_path]
+        if self.profile:
+            args.extend(["--profile", self.profile])
+        args.extend([self.site, self.command, query, "--limit", str(max_results), "-f", "json"])
+        if self.region:
+            args.extend(["--region", self.region])
+        if self.time_range:
+            args.extend(["--time", self.time_range])
+        if self.lang:
+            args.extend(["--lang", self.lang])
+        if self.window:
+            args.extend(["--window", self.window])
+        if self.site_session:
+            args.extend(["--site-session", self.site_session])
+
+        try:
+            completed = subprocess.run(
+                args,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+            )
+        except Exception as e:
+            log(f"opencli search failed: {e}")
+            return []
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout).strip()
+            log(f"opencli search failed: exit={completed.returncode} {detail}")
+            return []
+        try:
+            payload = json.loads(completed.stdout)
+        except json.JSONDecodeError as e:
+            log(f"opencli search returned invalid JSON: {e}")
+            return []
+
+        rows = self._extract_rows(payload)
+        retrieved_at = dt.datetime.now(dt.timezone.utc).isoformat()
+        results: list[dict[str, str]] = []
+        for row in rows[:max_results]:
+            if not isinstance(row, dict):
+                continue
+            title = str(row.get("title") or row.get("name") or row.get("heading") or "")
+            url = str(row.get("url") or row.get("link") or row.get("href") or "")
+            snippet = str(row.get("snippet") or row.get("summary") or row.get("content") or row.get("description") or "")
+            results.append({
+                "title": title,
+                "url": url,
+                "snippet": snippet,
+                "content": snippet,
+                "published_date": str(row.get("date") or row.get("published_date") or ""),
+                "score": str(row.get("rank") or row.get("score") or ""),
+                "source": f"opencli:{self.site}",
+                "retrieved_at": retrieved_at,
+            })
+        return results
+
+    @staticmethod
+    def _extract_rows(payload: Any) -> list[Any]:
+        if isinstance(payload, list):
+            return payload
+        if not isinstance(payload, dict):
+            return []
+        for key in ("results", "items", "data", "rows"):
+            rows = payload.get(key)
+            if isinstance(rows, list):
+                return rows
+        return []
+
 def search_freshness_for_provider(provider: str, config: dict[str, Any]) -> str:
     value = str(config.get("search", {}).get("freshness", "")).strip().lower()
     if value in {"", "none", "false", "0"}:
         return ""
+    if provider == "opencli":
+        return {
+            "day": "d",
+            "pd": "d",
+            "week": "w",
+            "pw": "w",
+            "month": "m",
+            "pm": "m",
+            "year": "y",
+            "py": "y",
+        }.get(value, value)
     if provider == "brave":
         return {
             "day": "pd",
@@ -269,6 +381,21 @@ def build_search_provider(config: dict[str, Any]) -> SearchProvider:
         if not api_key:
             raise RuntimeError(f"Brave search enabled but API key not found in {api_key_env}")
         return BraveSearchProvider(api_key, timeout_seconds, freshness=search_freshness_for_provider("brave", config))
+
+    if provider == "opencli":
+        opencli_config = search.get("providers", {}).get("opencli", {})
+        return OpenCliSearchProvider(
+            timeout_seconds,
+            command_path=str(opencli_config.get("command_path", "opencli")),
+            site=str(opencli_config.get("site", "duckduckgo")),
+            command=str(opencli_config.get("command", "search")),
+            region=str(opencli_config.get("region", "")).strip(),
+            time_range=search_freshness_for_provider("opencli", config),
+            lang=str(opencli_config.get("lang", "")).strip(),
+            profile=str(opencli_config.get("profile", "")).strip(),
+            window=str(opencli_config.get("window", "background")).strip(),
+            site_session=str(opencli_config.get("site_session", "ephemeral")).strip(),
+        )
         
     raise RuntimeError(f"未知搜索工具 provider: {provider}")
 

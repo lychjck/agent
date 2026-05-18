@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
@@ -27,9 +28,9 @@ class LlmToolStep(BaseModel):
 
 def strip_json_markdown(text: str) -> str:
     clean = text.strip()
-    if clean.startswith("<|channel>"):
-        _, _, clean = clean.partition("\n")
-        clean = clean.strip()
+    clean = clean.replace("\ufffd", " ")
+    clean = re.sub(r"<\|channel\|?>\s*(analysis|commentary|final|assistant|thought)?", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"<\|/?(message|assistant|analysis|commentary|final|end)\|?>", "", clean, flags=re.IGNORECASE)
     clean = clean.replace("<channel|>", "").strip()
     if clean.startswith("```json"):
         clean = clean[7:].strip()

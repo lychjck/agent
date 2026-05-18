@@ -443,7 +443,7 @@ export default function App() {
               System Active
             </div>
             <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight bg-gradient-to-br from-white via-amber-200 to-amber-500 bg-clip-text text-transparent flex items-center gap-3">
-              AI 投资驾驶舱
+              驾驶舱
             </h1>
             <p className="text-slate-400 text-sm md:text-base max-w-xl leading-relaxed">
               实时监控您的场内 ETF 与场外基金资产，结合大模型多维度深度诊断，为您提供量化与基本面结合的操作建议。

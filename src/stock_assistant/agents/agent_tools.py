@@ -1,4 +1,7 @@
+import json
 import re
+import shutil
+import subprocess
 from collections.abc import Callable
 from typing import Any, Literal
 
@@ -14,7 +17,6 @@ from stock_assistant.core.skills import (
     read_skill_file_content,
     skill_file_paths,
     strip_html_tags,
-    web_search_results,
 )
 from stock_assistant.core.utils import config_bool
 
@@ -111,7 +113,7 @@ class WebSearchArgs(BaseModel):
     engines: list[str] = Field(
         default_factory=list, 
         max_length=8,
-        description="可选。指定搜索引擎列表。支持: 'sogou', 'duckduckgo', 'bing_cn'。针对中文查询，强烈建议首选 'sogou'，因为其返回的中文财经数据摘要最完整。"
+        description="兼容旧参数。当前 web_search 统一使用 opencli，忽略 engines。"
     )
     max_results: int = Field(default=8, ge=1, le=10)
 
@@ -119,6 +121,28 @@ class WebSearchArgs(BaseModel):
 class WebReadArgs(BaseModel):
     url: str = Field(min_length=1, max_length=1000)
     max_chars: int = Field(default=12000, ge=1000, le=30000)
+
+
+class OpenCliCommandArgs(BaseModel):
+    site: str = Field(
+        min_length=1,
+        max_length=80,
+        description="opencli site adapter 名称，例如 duckduckgo、google、eastmoney、sinafinance、xueqiu、web。",
+    )
+    command: str = Field(
+        min_length=1,
+        max_length=80,
+        description="opencli 命令名称，例如 search、quote、etf、kline、news、read。",
+    )
+    positionals: list[str] = Field(
+        default_factory=list,
+        max_length=6,
+        description="位置参数，按 opencli <site> <command> 的 usage 顺序填写，例如搜索词、股票代码、URL。",
+    )
+    options: dict[str, str | int | float | bool] = Field(
+        default_factory=dict,
+        description="命令选项，不带 -- 前缀，例如 limit=10、region=cn-zh、type=1、url=https://...。",
+    )
 
 
 def holding_tool_record(holding: Any, total_value: float | None, fields: list[str]) -> dict[str, Any]:
@@ -329,29 +353,32 @@ def handle_web_fetch(args: BaseModel, workspace: AgentWorkspace) -> dict[str, An
     }
 
 
-def default_search_engines(query: str) -> list[str]:
-    if re.search(r"[\u4e00-\u9fff]", query):
-        return ["sogou"]
-    return ["duckduckgo", "bing"]
-
-
 def handle_web_search(args: BaseModel, workspace: AgentWorkspace) -> dict[str, Any]:
     typed = args if isinstance(args, WebSearchArgs) else WebSearchArgs.model_validate(args)
-    timeout_seconds = int(workspace.config.get("search", {}).get("timeout_seconds", 20) or 20)
-    engines = typed.engines or default_search_engines(typed.query)
-    results = web_search_results(
-        typed.query,
-        engines,
-        max_results=typed.max_results,
-        timeout_seconds=timeout_seconds,
-    )
-    useful_count = len([item for item in results if item.get("title") != "搜索失败"])
+    search_config = workspace.config.get("search", {})
+    opencli_search_config = dict(workspace.config)
+    opencli_search = dict(search_config) if isinstance(search_config, dict) else {}
+    opencli_search["enabled"] = True
+    opencli_search["provider"] = "opencli"
+    opencli_search_config["search"] = opencli_search
+
+    from stock_assistant.integrations.search import build_search_provider
+
+    results = build_search_provider(opencli_search_config).search(typed.query, typed.max_results)
     return {
         "query": typed.query,
-        "engines": engines,
-        "count": useful_count,
-        "results": results,
-        "summary": f"搜索 {typed.query}，返回 {useful_count} 条结果",
+        "engines": ["opencli"],
+        "count": len(results),
+        "results": [
+            {
+                "engine": str(item.get("source", "opencli")),
+                "title": str(item.get("title", "")),
+                "url": str(item.get("url", "")),
+                "snippet": str(item.get("snippet", "")),
+            }
+            for item in results
+        ],
+        "summary": f"opencli 搜索 {typed.query}，返回 {len(results)} 条结果",
     }
 
 
@@ -374,6 +401,113 @@ def handle_web_read(args: BaseModel, workspace: AgentWorkspace) -> dict[str, Any
         "content": text[:typed.max_chars],
         "truncated": truncated,
         "summary": f"读取 {final_url}，返回 {min(len(text), typed.max_chars)} 字符" + ("（内容已截断）" if truncated else ""),
+    }
+
+
+DEFAULT_OPENCLI_COMMANDS = {
+    "duckduckgo": {"search", "suggest"},
+    "google": {"search", "news", "suggest", "trends"},
+    "brave": {"search"},
+    "yahoo": {"search"},
+    "eastmoney": {
+        "announcement",
+        "convertible",
+        "etf",
+        "holders",
+        "index-board",
+        "kline",
+        "kuaixun",
+        "longhu",
+        "money-flow",
+        "northbound",
+        "quote",
+        "rank",
+        "sectors",
+    },
+    "sinafinance": {"news", "stock"},
+    "xueqiu": {"search", "stock", "kline", "hot-stock"},
+    "yahoo-finance": {"quote"},
+    "barchart": {"quote", "options", "greeks"},
+    "bloomberg": {"main", "markets", "economics", "industries", "tech", "politics"},
+    "reuters": {"search", "article-detail"},
+    "web": {"read"},
+}
+
+
+def allowed_opencli_commands(config: dict[str, Any]) -> dict[str, set[str]]:
+    configured = config.get("search", {}).get("providers", {}).get("opencli", {}).get("allowed_commands", {})
+    if not isinstance(configured, dict):
+        return DEFAULT_OPENCLI_COMMANDS
+    allowed: dict[str, set[str]] = {}
+    for site, commands in configured.items():
+        if isinstance(commands, str):
+            allowed[str(site)] = {item.strip() for item in commands.split(",") if item.strip()}
+        elif isinstance(commands, list):
+            allowed[str(site)] = {str(item).strip() for item in commands if str(item).strip()}
+    return allowed or DEFAULT_OPENCLI_COMMANDS
+
+
+def validate_opencli_option_name(name: str) -> str:
+    normalized = name.strip().replace("_", "-")
+    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9-]{0,60}", normalized):
+        raise ValueError(f"不安全的 opencli option: {name}")
+    return normalized
+
+
+def handle_opencli_command(args: BaseModel, workspace: AgentWorkspace) -> dict[str, Any]:
+    typed = args if isinstance(args, OpenCliCommandArgs) else OpenCliCommandArgs.model_validate(args)
+    site = typed.site.strip()
+    command = typed.command.strip()
+    allowed = allowed_opencli_commands(workspace.config)
+    if command not in allowed.get(site, set()):
+        raise ValueError(f"opencli 命令不在允许列表中: {site} {command}")
+
+    search_config = workspace.config.get("search", {})
+    opencli_config = search_config.get("providers", {}).get("opencli", {}) if isinstance(search_config, dict) else {}
+    command_path = str(opencli_config.get("command_path", "opencli"))
+    if "/" not in command_path and shutil.which(command_path) is None:
+        raise RuntimeError(f"opencli command not found: {command_path}")
+
+    cmd = [command_path]
+    profile = str(opencli_config.get("profile", "")).strip()
+    if profile:
+        cmd.extend(["--profile", profile])
+    cmd.extend([site, command])
+    cmd.extend(str(item) for item in typed.positionals)
+    for key, value in typed.options.items():
+        option = validate_opencli_option_name(str(key))
+        if isinstance(value, bool):
+            if value:
+                cmd.append(f"--{option}")
+            continue
+        cmd.extend([f"--{option}", str(value)])
+    cmd.extend(["-f", "json"])
+
+    timeout_seconds = int(search_config.get("timeout_seconds", 20) or 20)
+    try:
+        completed = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"opencli 执行失败: {exc}") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise RuntimeError(f"opencli 执行失败 exit={completed.returncode}: {detail}")
+    try:
+        payload: Any = json.loads(completed.stdout)
+    except Exception:
+        payload = completed.stdout.strip()
+    count = len(payload) if isinstance(payload, list) else 1 if payload else 0
+    return {
+        "site": site,
+        "command": command,
+        "count": count,
+        "result": payload,
+        "summary": f"opencli {site} {command} 返回 {count} 条/组结果",
     }
 
 
@@ -462,9 +596,22 @@ def build_agent_tool_registry(config: dict[str, Any]) -> dict[str, AgentToolSpec
     if config_bool(config.get("agent", {}).get("allow_external_search_tools", False)):
         tools.extend([
             AgentToolSpec(
+                name="opencli_command",
+                description=(
+                    "调用 opencli 的只读站点适配器命令，返回 JSON。先按任务选择具体 site/command，"
+                    "例如 duckduckgo/google/brave/yahoo search 做通用搜索；eastmoney quote/etf/kline/sectors/kuaixun/rank "
+                    "抓 A 股/ETF/板块/快讯；sinafinance news/stock 抓新浪财经快讯和行情；"
+                    "xueqiu search/stock/kline/hot-stock 抓雪球股票信息；web read 用浏览器把 URL 导出为 Markdown。"
+                    "不知道某个命令参数时，按 opencli list/help 暴露的 usage 组织 positionals/options。"
+                ),
+                args_model=OpenCliCommandArgs,
+                handler=handle_opencli_command,
+                permission="web:read",
+            ),
+            AgentToolSpec(
                 name="web_search",
                 description=(
-                    "用一个或多个搜索引擎执行网页搜索，返回结构化结果 title/url/snippet。"
+                    "通过 opencli 执行网页搜索，返回结构化结果 title/url/snippet。"
                     "优先用它搜索，再用 web_read 打开具体结果页。"
                 ),
                 args_model=WebSearchArgs,

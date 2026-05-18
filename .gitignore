@@ -25,3 +25,5 @@ tt.py
 .agent
 data/skills/*
 !data/skills/.gitkeep
+temp_test_search/*
+!temp_test_search/.gitkeep

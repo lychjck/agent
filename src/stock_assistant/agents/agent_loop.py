@@ -61,15 +61,31 @@ def build_initial_agent_messages(goal: str, tools: list[dict[str, Any]], use_nat
             )
     search_rule = ""
     if {"web_search", "web_read"} <= tool_names:
+        opencli_rule = ""
+        if "opencli_command" in tool_names:
+            opencli_rule = (
+                "当前可用 opencli_command。它不是普通搜索框，而是 opencli 的站点适配器命令入口；"
+                "必须根据任务先选择 site/command，再组织 positionals/options。"
+                "财经/持仓任务优先使用：eastmoney quote/etf/kline/sectors/kuaixun/rank，"
+                "sinafinance news/stock，xueqiu search/stock/kline/hot-stock，yahoo-finance quote；"
+                "通用检索再用 duckduckgo/google/brave/yahoo search；打开具体 URL 正文可用 web read 或 web_read。"
+                "典型调用格式："
+                "opencli_command(site='duckduckgo', command='search', positionals=['查询词'], options={'limit':10,'region':'cn-zh'});"
+                "opencli_command(site='eastmoney', command='quote', positionals=['SH510300'], options={});"
+                "opencli_command(site='eastmoney', command='kline', positionals=['SH510300'], options={'period':'day','limit':60});"
+                "opencli_command(site='web', command='read', positionals=[], options={'url':'https://...','stdout':true,'download-images':false})。"
+            )
         search_rule = (
-            "外部搜索硬性规则：如果任务涉及 ETF/基金/股票/市场/行业/宏观背景/今日行情，且可用工具包含 web_search/web_read，"
+            f"{opencli_rule}"
+            "外部研究硬性规则：如果任务涉及 ETF/基金/股票/市场/行业/宏观背景/今日行情，且可用外部工具，"
             "必须执行分层外部研究，不能只搜索一次就结束。分层研究至少包括："
             "1) 组合层面搜索：查询今日市场、宏观、A股/港股/美股、利率、汇率、商品等背景；"
             "2) 主题层面搜索：按组合主要暴露主题搜索，例如红利低波、债券基金、恒生科技、纳指100、医药、消费、有色、能源、电力；"
             "3) 标的层面搜索：对用户持仓中每个权重>=1%的标的逐一搜索；低于1%的标的如数量较多，可按主题分组搜索，但 final_report 必须列出未逐一搜索的标的。"
-            "每个 web_search 必须设置 max_results=8 到 10；如果 skill 文档建议了搜索引擎，arguments.engines 必须按 skill 指定。"
+            "如果 opencli_command 可用，优先用它调用具体站点命令抓结构化数据；只有站点命令不覆盖当前问题时才退回 web_search。"
+            "web_search 底层统一走 opencli；每个通用 web_search 必须设置 max_results=8 到 10，不要指定 engines。"
             "每个重要主题或核心标的至少 web_read 一个相关来源页。"
-            "除非 web_search 工具报错或连续返回无关结果，否则不能在未完成组合层面+主题层面+核心标的层面搜索前输出 final_report。"
+            "除非外部工具报错或连续返回无关结果，否则不能在未完成组合层面+主题层面+核心标的层面研究前输出 final_report。"
             "如果已安装的 skill 是搜索类 skill，例如 multi-search-engine，必须先 read_skill，再按该 skill 选择搜索引擎和查询语法。"
         )
         
@@ -101,11 +117,14 @@ def build_initial_agent_messages(goal: str, tools: list[dict[str, Any]], use_nat
         "对权重<1%的标的，也必须至少按行业/主题分组纳入搜索和限制说明。"
         "如果可用工具里有 list_skills/read_skill，且任务可能匹配用户安装的 skill，先列出 skill 发现需求；"
         "读取 skill 后必须按其 SKILL.md 的约束工作，并在 observation_reflection 中说明采用了哪个 skill。"
-        "如果可用工具里有 web_search/web_read，搜索任务应优先用 web_search 获取结构化结果，再用 web_read 打开具体来源；"
+        "如果可用工具里有 opencli_command，外部研究必须优先把需求映射成 opencli 的 site/command："
+        "市场/指数/板块/ETF 行情优先 eastmoney；财经快讯优先 eastmoney kuaixun 或 sinafinance news；"
+        "股票/ETF 搜索优先 xueqiu/eastmoney/sinafinance；通用网页检索才用 duckduckgo/google/brave/yahoo search；"
+        "如果可用工具里有 web_search/web_read，搜索任务可用 web_search 获取结构化结果，再用 web_read 打开具体来源；"
         "对于 ETF/基金/持仓分析，外部搜索需求至少包括：市场背景、相关行业/主题近期表现、重大新闻或宏观风险；"
-        "外部搜索计划必须分成 market_context、theme_research、holding_research 三类，并在 available_tool_mapping 中映射到 web_search/web_read。"
+        "外部搜索计划必须分成 market_context、theme_research、holding_research 三类，并在 available_tool_mapping 中映射到 opencli_command/web_search/web_read。"
         "holding_research 至少覆盖所有权重>=1%的标的；如果用户要求每个 ETF 建议，必须在 coverage_notes 逐项说明每个 ETF 是否完成外部搜索、技术指标、分类信息三类覆盖。"
-        "如果 web_search/web_read 可用，这些需求必须映射到 web_search/web_read，而不是写成 missing_capabilities。"
+        "如果 opencli_command 或 web_search/web_read 可用，这些需求必须映射到可用外部工具，而不是写成 missing_capabilities。"
         "只有需要直接访问某个 URL 时才使用底层 web_fetch。"
         "当前工具无法获取的信息必须写入 missing_capabilities，例如 ETF 底层持仓、跟踪指数、指数成分、成分股 K 线等。\n\n"
         "每次输出必须包含 reasoning_summary 和 thinking_trace。thinking_trace 用对象表达："
@@ -172,8 +191,11 @@ def build_act_prompt() -> str:
         "只能对 available_tool_mapping 中当前工具能满足的信息需求调用工具。"
         "如果计划中包含 skill 发现，且 list_skills/read_skill 可用，必须先调用 list_skills；"
         "如果已经知道存在可用 skill 但尚未 read_skill，下一步必须调用 read_skill。"
+        "如果 opencli_command 可用且任务涉及 ETF/基金/股票/市场/行业/宏观背景，"
+        "优先调用 opencli_command 的具体 site/command 获取结构化证据，例如 eastmoney quote/kline/sectors/kuaixun、"
+        "sinafinance news/stock、xueqiu search/stock/kline、duckduckgo/google search、web read。"
         "如果 web_search/web_read 可用，且任务涉及 ETF/基金/股票/市场/行业/宏观背景，"
-        "必须按 market_context、theme_research、holding_research 三层安排 web_search，并在得到搜索结果后用 web_read 打开相关来源。"
+        "必须按 market_context、theme_research、holding_research 三层安排外部研究；通用检索用 web_search，具体站点数据用 opencli_command，得到 URL 后用 web_read 打开相关来源。"
         "每次最多并行调用 6 个搜索/读取工具，优先覆盖权重>=1%的标的；不要因为已有技术指标就跳过外部搜索。"
         "每次调用工具前，在 thinking_trace.decision_basis 中说明为什么这个工具能推进任务。"
         "如果已有证据不足，不要输出 final_report；如果缺少 ETF 底层持仓/指数成分等能力，"
@@ -188,9 +210,9 @@ def build_reflection_prompt() -> str:
         "是否覆盖了用户要求的每个 ETF 建议、下一步应该继续调用哪些工具或是否可以最终报告。"
         "如果 list_skills observation 显示 count>0，而当前上下文还没有 read_skill observation，"
         "next_action 必须是 continue_tools，required_tool_calls 必须包含 read_skill。"
-        "如果 read_skill 显示这是搜索类 skill，且 web_search/web_read 可用，同时任务涉及 ETF/基金/股票/市场/行业/宏观背景，"
-        "next_action 必须是 continue_tools，required_tool_calls 必须包含 web_search，并说明属于 market_context、theme_research 还是 holding_research；"
-        "如果已有 web_search 结果且存在相关 URL，required_tool_calls 必须包含 web_read。"
+        "如果 read_skill 显示这是搜索类 skill，且外部工具可用，同时任务涉及 ETF/基金/股票/市场/行业/宏观背景，"
+        "next_action 必须是 continue_tools，required_tool_calls 必须包含 opencli_command 或 web_search，并说明属于 market_context、theme_research 还是 holding_research；"
+        "如果已有 opencli_command/web_search 结果且存在相关 URL，required_tool_calls 必须包含 web_read 或 opencli_command(site='web', command='read')。"
         "如果还没有覆盖所有权重>=1%的标的外部搜索，next_action 不得为 final_report；"
         "如果低权重标的未逐一搜索，coverage_notes 必须按主题列出它们被哪一次分组搜索覆盖。"
         "如果还缺 ETF 底层持仓/指数成分等能力，要继续保留在 missing_capabilities，并说明这对建议强度的影响。"
@@ -208,8 +230,8 @@ def build_after_reflection_prompt(reflection: dict[str, Any]) -> str:
         )
     return (
         "已记录 observation_reflection。现在请根据 required_tool_calls 或 unsatisfied_needs 继续调用工具。"
-        "如果 required_tool_calls 中提到 read_skill、web_search 或 web_read，且这些工具在可用工具列表中，优先执行这些工具。"
-        "如果还没有完成 market_context、theme_research、holding_research 三层搜索，不要输出 final_report；继续搜索或读取来源页。"
+        "如果 required_tool_calls 中提到 read_skill、opencli_command、web_search 或 web_read，且这些工具在可用工具列表中，优先执行这些工具。"
+        "如果还没有完成 market_context、theme_research、holding_research 三层外部研究，不要输出 final_report；继续调用 opencli_command/web_search 或读取来源页。"
         "如果当前工具无法满足某个需求，不要臆测；保留 missing_capabilities，并选择还能推进任务的可用工具。"
     )
 
@@ -313,7 +335,9 @@ def external_research_gap(
     web_search_queries: list[str],
     web_read_count: int,
 ) -> dict[str, Any] | None:
-    if "web_search" not in registry or "web_read" not in registry:
+    if "web_search" not in registry and "opencli_command" not in registry:
+        return None
+    if "web_read" not in registry and "opencli_command" not in registry:
         return None
     if not goal_requires_external_research(goal):
         return None
@@ -326,9 +350,9 @@ def external_research_gap(
     ]
     reasons: list[str] = []
     if not web_search_queries:
-        reasons.append("尚未执行 web_search")
+        reasons.append("尚未执行 opencli_command/web_search")
     if web_read_count <= 0:
-        reasons.append("尚未执行 web_read，只有搜索结果摘要，没有打开来源页")
+        reasons.append("尚未执行 web_read/opencli web read，只有搜索结果摘要，没有打开来源页")
     if missing:
         reasons.append(f"权重>=1%的标的仍有 {len(missing)} 个未在搜索 query 中逐项覆盖")
     if not reasons:
@@ -353,8 +377,8 @@ def build_external_research_gate_prompt(gap: dict[str, Any]) -> str:
         f"原因：{'; '.join(str(item) for item in gap.get('reasons', []))}。"
         f"尚未逐项搜索的核心标的：{missing_text or '无'}。"
         "下一步必须继续调用工具："
-        "1) 如果 web_read_count=0，先从已有 web_search 结果中选择最相关 URL 调用 web_read；"
-        "2) 对 missing_holding_research 中的标的分批调用 web_search，每次最多 6 个工具调用，query 必须包含标的代码和名称；"
+        "1) 如果 web_read_count=0，先从已有 opencli_command/web_search 结果中选择最相关 URL 调用 web_read 或 opencli_command(site='web', command='read')；"
+        "2) 对 missing_holding_research 中的标的分批调用 opencli_command 或 web_search，每次最多 6 个工具调用，query/positionals 必须包含标的代码和名称；"
         "3) 之后重新 observation_reflection，coverage_notes 必须基于实际工具调用，不得虚报。"
     )
 
@@ -456,9 +480,12 @@ async def run_tool_agent_events(
             step = call_llm_tool_step(messages, schemas, config, model_override=model_override)
             elapsed = time.monotonic() - started
         except Exception as exc:  # noqa: BLE001
-            trace.write("error", {"turn": turn, "error": str(exc)})
-            agent_log(run_id, f"llm_response_parse_failed error={exc}", turn=turn, level="ERROR")
-            yield tool_agent_event("error", "LLM 工具调用输出无法解析", run_id=run_id, error=str(exc))
+            detail = str(exc)
+            if reflection_required and not detail:
+                detail = "工具 observation 后必须先输出 observation_reflection"
+            trace.write("error", {"turn": turn, "error": detail})
+            agent_log(run_id, f"llm_response_parse_failed error={detail}", turn=turn, level="ERROR")
+            yield tool_agent_event("error", "LLM 工具调用输出无法解析", run_id=run_id, error=detail)
             return
 
         trace.write("llm_response", {"turn": turn, "type": step.type, "raw_text": step.raw_text})
@@ -908,6 +935,20 @@ async def run_tool_agent_events(
                 query = str((observation.result or {}).get("query") or call.arguments.get("query") or "").strip()
                 if query:
                     web_search_queries.append(query)
+            if observation.ok and call.name == "opencli_command":
+                site = str(call.arguments.get("site", "")).strip()
+                command = str(call.arguments.get("command", "")).strip()
+                positionals = call.arguments.get("positionals") or []
+                options = call.arguments.get("options") or {}
+                query = " ".join(
+                    [site, command]
+                    + [str(item) for item in positionals if str(item).strip()]
+                    + [str(value) for value in options.values() if str(value).strip()]
+                ).strip()
+                if query:
+                    web_search_queries.append(query)
+                if site == "web" and command == "read":
+                    web_read_count += 1
             if observation.ok and call.name == "web_read":
                 web_read_count += 1
             messages.append(tool_observation_message(call, observation))

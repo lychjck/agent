@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from copy import deepcopy
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from stock_assistant.agents.agent_tools import build_agent_tool_registry
 from stock_assistant.agents.agent_executor import truncate_payload
@@ -177,20 +177,25 @@ class TestAgentTools(unittest.TestCase):
     def test_web_search_and_read_tools_are_available_when_enabled(self):
         config = deepcopy(self.config)
         config["agent"]["allow_external_search_tools"] = True
+        config["search"]["providers"]["opencli"] = {"command_path": "/opt/bin/opencli"}
         workspace = AgentWorkspace(config, holdings=self.holdings)
         registry = build_agent_tool_registry(config)
 
         self.assertIn("web_search", registry)
         self.assertIn("web_read", registry)
+        self.assertIn("opencli_command", registry)
 
-        with patch(
-            "stock_assistant.agents.agent_tools.web_search_results",
-            return_value=[{"engine": "bing_cn", "title": "行情", "url": "https://example.com/a", "snippet": "摘要"}],
-        ):
+        with patch("stock_assistant.integrations.search.subprocess.run") as run:
+            run.return_value = MagicMock(
+                returncode=0,
+                stdout='[{"title":"行情","url":"https://example.com/a","snippet":"摘要"}]',
+                stderr="",
+            )
             search = registry["web_search"].handler(
-                registry["web_search"].args_model(query="今天股市行情", engines=["bing_cn"], max_results=3),
+                registry["web_search"].args_model(query="今天股市行情", engines=["legacy_engine"], max_results=3),
                 workspace,
             )
+            search_cmd = run.call_args.args[0]
         with patch(
             "stock_assistant.agents.agent_tools.fetch_url_bytes",
             return_value=(
@@ -205,9 +210,56 @@ class TestAgentTools(unittest.TestCase):
             )
 
         self.assertEqual(search["count"], 1)
+        self.assertEqual(search["engines"], ["opencli"])
+        self.assertEqual(search["results"][0]["engine"], "opencli:duckduckgo")
         self.assertEqual(search["results"][0]["url"], "https://example.com/a")
+        self.assertEqual(search_cmd[:4], ["/opt/bin/opencli", "duckduckgo", "search", "今天股市行情"])
+        self.assertNotIn("legacy_engine", search_cmd)
         self.assertIn("正文行情", read["content"])
         self.assertNotIn("noise", read["content"])
+
+    def test_opencli_command_tool_runs_allowed_read_command(self):
+        config = deepcopy(self.config)
+        config["agent"]["allow_external_search_tools"] = True
+        config["search"]["providers"]["opencli"] = {"command_path": "/opt/bin/opencli"}
+        workspace = AgentWorkspace(config, holdings=self.holdings)
+        registry = build_agent_tool_registry(config)
+
+        with patch("stock_assistant.agents.agent_tools.subprocess.run") as run:
+            run.return_value = MagicMock(
+                returncode=0,
+                stdout='[{"code":"510300","name":"沪深300ETF"}]',
+                stderr="",
+            )
+            result = registry["opencli_command"].handler(
+                registry["opencli_command"].args_model(
+                    site="eastmoney",
+                    command="quote",
+                    positionals=["510300"],
+                    options={},
+                ),
+                workspace,
+            )
+
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["result"][0]["code"], "510300")
+        run.assert_called_once()
+        self.assertEqual(
+            run.call_args.args[0],
+            ["/opt/bin/opencli", "eastmoney", "quote", "510300", "-f", "json"],
+        )
+
+    def test_opencli_command_tool_rejects_unallowed_command(self):
+        config = deepcopy(self.config)
+        config["agent"]["allow_external_search_tools"] = True
+        workspace = AgentWorkspace(config, holdings=self.holdings)
+        registry = build_agent_tool_registry(config)
+
+        with self.assertRaises(ValueError):
+            registry["opencli_command"].handler(
+                registry["opencli_command"].args_model(site="twitter", command="post", positionals=[], options={}),
+                workspace,
+            )
 
     def test_truncate_payload_preserves_web_read_fields(self):
         payload = {

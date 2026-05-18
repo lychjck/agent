@@ -77,12 +77,12 @@ reviewed_by_user = true
 
 [search]
 enabled = true
-provider = "tavily"
+provider = "opencli"
 cache_dir = "data/research"
 timeout_seconds = 20
 max_results = 5
 search_depth = "basic"
-# 可选：none/day/week/month/year。Tavily 会映射为 time_range，Brave 会映射为 freshness。
+# 可选：none/day/week/month/year。opencli 会映射为 --time，Tavily 会映射为 time_range，Brave 会映射为 freshness。
 freshness = "year"
 start_date = ""
 end_date = ""
@@ -100,6 +100,31 @@ topic = "finance"
 [search.providers.brave]
 enabled = false
 api_key_env = "BRAVE_SEARCH_API_KEY"
+
+[search.providers.opencli]
+enabled = true
+command_path = "opencli"
+site = "duckduckgo"
+command = "search"
+region = "cn-zh"
+lang = ""
+profile = ""
+window = "background"
+site_session = "ephemeral"
+
+[search.providers.opencli.allowed_commands]
+duckduckgo = "search,suggest"
+google = "search,news,suggest,trends"
+brave = "search"
+yahoo = "search"
+eastmoney = "announcement,convertible,etf,holders,index-board,kline,kuaixun,longhu,money-flow,northbound,quote,rank,sectors"
+sinafinance = "news,stock"
+xueqiu = "search,stock,kline,hot-stock"
+"yahoo-finance" = "quote"
+barchart = "quote,options,greeks"
+bloomberg = "main,markets,economics,industries,tech,politics"
+reuters = "search,article-detail"
+web = "read"
 
 [search.source_tiers]
 tier1 = "sse.com.cn,szse.cn,csindex.com.cn,cnindex.com.cn"

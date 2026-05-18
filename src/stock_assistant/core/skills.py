@@ -341,7 +341,7 @@ def is_search_noise_url(url: str) -> bool:
     parsed = urlparse(url)
     host = parsed.netloc.lower()
     path = parsed.path.lower()
-    if any(item in host for item in {"google.com", "bing.com", "baidu.com", "sogou.com", "so.com", "duckduckgo.com"}):
+    if any(item in host for item in {"google.com", "bing.com", "baidu.com", "so.com", "duckduckgo.com"}):
         noise_paths = {
             "/",
             "/search",
@@ -400,7 +400,6 @@ SEARCH_ENGINE_URLS = {
     "bing": "https://www.bing.com/search?{query}",
     "duckduckgo": "https://duckduckgo.com/html/?{query}",
     "google": "https://www.google.com/search?{query}",
-    "sogou": "https://www.sogou.com/web?{query}",
     "360": "https://www.so.com/s?{query}",
 }
 
@@ -417,8 +416,6 @@ SEARCH_ENGINE_ALIASES = {
     "duck duck go": "duckduckgo",
     "ddg": "duckduckgo",
     "google": "google",
-    "sogou": "sogou",
-    "搜狗": "sogou",
     "360": "360",
     "360搜索": "360",
 }
@@ -434,7 +431,7 @@ def normalize_search_engine(engine: str) -> str:
 
 def search_url(engine: str, query: str) -> str:
     engine = normalize_search_engine(engine)
-    key = "query" if engine == "sogou" else "wd" if engine == "baidu" else "q"
+    key = "wd" if engine == "baidu" else "q"
     encoded_query = urlencode({key: query})
     return SEARCH_ENGINE_URLS[engine].format(query=encoded_query)
 

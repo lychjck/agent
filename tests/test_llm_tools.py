@@ -88,6 +88,15 @@ class TestLlmTools(unittest.TestCase):
         self.assertEqual(step.type, "observation_reflection")
         self.assertEqual(step.reasoning_summary, "已反思")
 
+    def test_parse_strips_inline_channel_marker_with_replacement_char(self):
+        step = parse_llm_tool_step(
+            '<|channel>�{"type":"tool_calls","reasoning_summary":"继续查",'
+            '"tool_calls":[{"name":"opencli_command","arguments":{"site":"eastmoney","command":"quote","positionals":["510300"]}}]}'
+        )
+
+        self.assertEqual(step.type, "tool_calls")
+        self.assertEqual(step.tool_calls[0].name, "opencli_command")
+
     def test_infers_single_tool_call(self):
         step = parse_llm_tool_step(json.dumps({
             "tool_call": {
