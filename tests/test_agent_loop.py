@@ -6,6 +6,7 @@ from copy import deepcopy
 from unittest.mock import patch
 
 from stock_assistant.agents.agent_loop import (
+    build_initial_agent_messages,
     final_report_missing_holding_analysis,
     merge_final_report_patch,
     missing_technical_codes,
@@ -37,6 +38,28 @@ class TestAgentLoop(unittest.TestCase):
         config["llm"]["enabled"] = True
         self.addCleanup(tmp.cleanup)
         return config
+
+    def test_initial_messages_split_protocol_and_task_prompt(self):
+        tools = [
+            {"type": "function", "function": {"name": "list_skills", "parameters": {}}},
+            {"type": "function", "function": {"name": "read_skill", "parameters": {}}},
+            {"type": "function", "function": {"name": "web_search", "parameters": {}}},
+            {"type": "function", "function": {"name": "web_read", "parameters": {}}},
+        ]
+
+        messages = build_initial_agent_messages("分析当前持仓", tools)
+
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertEqual(messages[1]["role"], "user")
+        self.assertIn("协议硬性规则", messages[0]["content"])
+        self.assertIn("必须把 skill 发现纳入信息需求", messages[0]["content"])
+        self.assertIn("Skill 使用硬性规则", messages[0]["content"])
+        self.assertNotIn("第一轮研究计划输出格式", messages[0]["content"])
+        self.assertIn("用户目标：分析当前持仓", messages[1]["content"])
+        self.assertIn("需要信息时只能从给定工具列表中选择工具", messages[1]["content"])
+        self.assertIn("当前工具无法获取的信息必须保留在 missing_capabilities", messages[1]["content"])
+        self.assertIn("第一轮研究计划输出格式", messages[1]["content"])
+        self.assertNotIn("不要输出 Markdown 包裹", messages[1]["content"])
 
     def test_tool_agent_runs_tool_then_final_report(self):
         config = self.config()

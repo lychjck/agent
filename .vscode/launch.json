@@ -2,19 +2,44 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug stock_assistant",
+            "name": "Debug Backend API",
             "type": "debugpy",
             "request": "launch",
             "python": "${workspaceFolder}/.venv/bin/python",
-            "program": "${workspaceFolder}/stock_assistant.py",
+            "module": "uvicorn",
+            "args": [
+                "api.main:app",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8080"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "showReturnValue": false,
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Debug stock-assistant CLI",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "module": "stock_assistant.cli.cli",
             "args": [
                 "--config",
                 "config.toml",
                 "run"
             ],
             "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "showReturnValue": false,
             "console": "integratedTerminal",
-            "justMyCode": false
+            "justMyCode": true
         }
     ]
 }

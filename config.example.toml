@@ -161,6 +161,8 @@ tool_agent_default = true
 # 防止 Agent 无限循环的保险丝
 max_tool_turns = 12
 max_tool_calls = 16
+# 后端内存中每个 UI run 保留的轮询事件数量上限；trace 文件不受此限制。
+max_run_events = 2000
 save_traces = true
 trace_dir = "data/state/agent_traces"
 # 是否允许 Agent 主动调用 web_search 补充上下文

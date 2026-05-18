@@ -1,4 +1,5 @@
 import unittest
+import logging
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -7,6 +8,56 @@ import api.main as api
 
 
 class TestAgentToolApi(unittest.TestCase):
+    def test_agent_run_polling_access_log_is_filtered(self):
+        filter_ = api.AgentRunPollingAccessFilter()
+        polling = logging.LogRecord(
+            name="uvicorn.access",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg='127.0.0.1:50360 - "GET /api/agent/run/agent-ui-1?after=2 HTTP/1.1" 200 OK',
+            args=(),
+            exc_info=None,
+        )
+        other = logging.LogRecord(
+            name="uvicorn.access",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg='127.0.0.1:50360 - "GET /api/overview HTTP/1.1" 200 OK',
+            args=(),
+            exc_info=None,
+        )
+
+        self.assertFalse(filter_.filter(polling))
+        self.assertTrue(filter_.filter(other))
+
+    def test_agent_run_events_limit_comes_from_config(self):
+        run_id = "test-run"
+        original_agent_config = dict(api.config.get("agent", {}))
+        try:
+            api.config.setdefault("agent", {})["max_run_events"] = 2
+            with api.agent_runs_lock:
+                api.agent_runs[run_id] = {
+                    "run_id": run_id,
+                    "status": "running",
+                    "events": [],
+                }
+
+            api.append_agent_run_event(run_id, {"step": "one"})
+            api.append_agent_run_event(run_id, {"step": "two"})
+            api.append_agent_run_event(run_id, {"step": "three"})
+
+            with api.agent_runs_lock:
+                events = list(api.agent_runs[run_id]["events"])
+
+            self.assertEqual([event["step"] for event in events], ["two", "three"])
+            self.assertEqual([event["event_index"] for event in events], [0, 1])
+        finally:
+            api.config["agent"] = original_agent_config
+            with api.agent_runs_lock:
+                api.agent_runs.pop(run_id, None)
+
     def test_tool_agent_stream_endpoint_uses_tool_agent_events(self):
         async def fake_events(*_args, **_kwargs):
             yield {"step": "agent_start", "status": "开始"}

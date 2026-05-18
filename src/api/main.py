@@ -23,6 +23,13 @@ from stock_assistant.core.utils import config_bool
 import logging
 import sys
 
+
+class AgentRunPollingAccessFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        return "GET /api/agent/run/" not in message
+
+
 def setup_basic_logging(level: int = logging.INFO) -> None:
     """初始化基础日志配置"""
     handler = logging.StreamHandler(sys.stderr)
@@ -39,6 +46,7 @@ def setup_basic_logging(level: int = logging.INFO) -> None:
             
     root.addHandler(handler)
     root.setLevel(level)
+    logging.getLogger("uvicorn.access").addFilter(AgentRunPollingAccessFilter())
 
 # 初始化日志系统
 setup_basic_logging()
@@ -72,7 +80,15 @@ class AgentRunRequest(BaseModel):
 
 agent_runs: dict[str, dict] = {}
 agent_runs_lock = threading.Lock()
-MAX_AGENT_RUN_EVENTS = 2000
+
+
+def max_agent_run_events() -> int:
+    value = config.get("agent", {}).get("max_run_events", 2000)
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        limit = 2000
+    return max(1, limit)
 
 
 def append_agent_run_event(run_id: str, event: dict) -> None:
@@ -85,8 +101,9 @@ def append_agent_run_event(run_id: str, event: dict) -> None:
         event_payload.setdefault("run_id", run_id)
         event_payload["event_index"] = len(events)
         events.append(event_payload)
-        if len(events) > MAX_AGENT_RUN_EVENTS:
-            del events[: len(events) - MAX_AGENT_RUN_EVENTS]
+        limit = max_agent_run_events()
+        if len(events) > limit:
+            del events[: len(events) - limit]
             for index, item in enumerate(events):
                 item["event_index"] = index
         record["updated_at"] = dt.datetime.now().isoformat(timespec="seconds")
@@ -517,34 +534,6 @@ def get_agent_run(run_id: str, after: int = 0):
         **response,
     }
 
-
-@app.post("/api/agent/run")
-async def run_agent(req: AgentRunRequest = AgentRunRequest()):
-    try:
-        if req.mode == "tool_agent" or (
-            req.mode == "default" and config_bool(config.get("agent", {}).get("tool_agent_default", False))
-        ):
-            snapshot = None
-            async for event in run_tool_agent_events(
-                config,
-                goal=req.goal or "分析当前持仓，给出组合风险、每个 ETF 的建议和需要确认的问题",
-                cached_results=req.cached_results,
-                model_override=req.model,
-            ):
-                if event.get("step") == "error":
-                    raise RuntimeError(str(event.get("error") or event.get("status") or "tool_agent failed"))
-                if event.get("step") == "done":
-                    snapshot = event.get("snapshot")
-            if snapshot is None:
-                raise RuntimeError("tool_agent 没有生成 snapshot")
-            return snapshot
-        return await run_agent_analysis(
-            config,
-            cached_results=req.cached_results,
-            model_override=req.model,
-        )
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.get("/api/agent/latest")
 def get_latest_agent_snapshot():
