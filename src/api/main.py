@@ -12,10 +12,12 @@ import uuid
 
 from stock_assistant import (
     load_config, load_env_file, ensure_dirs, fetch_tzzb_holdings,
-    llm_enabled, log, holding_to_dict, load_latest_agent_snapshot, list_agent_snapshots
+    llm_enabled, log, holding_to_dict, load_latest_agent_snapshot, list_agent_snapshots,
+    save_agent_snapshot,
 )
 from stock_assistant.agents.agent import run_agent_analysis, run_agent_analysis_events
 from stock_assistant.agents.agent_loop import run_tool_agent_events
+from stock_assistant.core.llm_tools import parse_llm_tool_step
 from stock_assistant.cli.cli import build_portfolio_profile
 from stock_assistant.core.utils import config_bool
 import logging
@@ -97,6 +99,79 @@ def update_agent_run(run_id: str, **updates: object) -> None:
             return
         record.update(updates)
         record["updated_at"] = dt.datetime.now().isoformat(timespec="seconds")
+
+
+def latest_agent_trace_path() -> Path | None:
+    trace_dir = Path(config.get("agent", {}).get("trace_dir", "data/state/agent_traces")).expanduser()
+    if not trace_dir.exists():
+        return None
+    traces = [path for path in trace_dir.glob("agent-*.jsonl") if path.is_file()]
+    if not traces:
+        return None
+    return max(traces, key=lambda path: path.stat().st_mtime)
+
+
+def recover_snapshot_from_trace(path: Path) -> dict | None:
+    model = "unknown"
+    final_report: dict | None = None
+    final_turn = None
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if record.get("type") == "agent_start" and record.get("model"):
+                model = str(record.get("model"))
+            if record.get("type") != "llm_response":
+                continue
+            raw_text = str(record.get("raw_text") or "")
+            if not raw_text:
+                continue
+            try:
+                step = parse_llm_tool_step(raw_text)
+            except Exception:
+                continue
+            if step.type == "final_report" and isinstance(step.final_report, dict):
+                final_report = step.final_report
+                final_turn = record.get("turn")
+    except Exception as exc:  # noqa: BLE001
+        log(f"从 trace 恢复报告失败 path={path}: {exc}", level="WARN", name="api")
+        return None
+    if not final_report:
+        return None
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    snapshot = {
+        "schema_version": 1,
+        "generated_at": now,
+        "source": f"recovered_trace:{path.name}",
+        "ledger_summary": {},
+        "portfolio": {},
+        "classifications": {},
+        "technical_results": [],
+        "observations": [],
+        "risk_flags": [],
+        "candidate_actions": [],
+        "agent_report": final_report,
+        "model": model,
+        "recovered_from_trace": {
+            "path": str(path),
+            "turn": final_turn,
+            "recovered_at": now,
+        },
+    }
+    save_agent_snapshot(snapshot, config)
+    log(f"已从 trace 恢复 final_report: {path}", name="api")
+    return snapshot
+
+
+def recover_latest_trace_snapshot_if_needed() -> dict | None:
+    trace_path = latest_agent_trace_path()
+    if trace_path is None:
+        return None
+    snapshots = list_agent_snapshots(config)
+    if snapshots and snapshots[-1].stat().st_mtime >= trace_path.stat().st_mtime:
+        return None
+    return recover_snapshot_from_trace(trace_path)
 
 
 async def run_agent_job(run_id: str, req: AgentRunRequest) -> None:
@@ -393,8 +468,38 @@ def get_agent_run(run_id: str, after: int = 0):
     start = max(0, int(after or 0))
     with agent_runs_lock:
         record = agent_runs.get(run_id)
-        if record is None:
+    if record is None:
+        snapshot = recover_latest_trace_snapshot_if_needed()
+        if snapshot is None:
             raise HTTPException(status_code=404, detail="agent run not found")
+        now = dt.datetime.now().isoformat(timespec="seconds")
+        with agent_runs_lock:
+            agent_runs[run_id] = {
+                "run_id": run_id,
+                "status": "completed",
+                "events": [
+                    {
+                        "step": "final_report",
+                        "status": "已从最新 trace 恢复最终报告",
+                        "run_id": run_id,
+                        "event_index": 0,
+                    },
+                    {
+                        "step": "done",
+                        "status": "Agent 分析完成",
+                        "run_id": run_id,
+                        "snapshot": snapshot,
+                        "event_index": 1,
+                    },
+                ],
+                "snapshot": snapshot,
+                "error": "",
+                "started_at": now,
+                "updated_at": now,
+                "thread": None,
+            }
+            record = agent_runs[run_id]
+    with agent_runs_lock:
         events = list(record.get("events", []))
         visible_events = events[start:]
         snapshot = record.get("snapshot")
@@ -443,7 +548,7 @@ async def run_agent(req: AgentRunRequest = AgentRunRequest()):
 
 @app.get("/api/agent/latest")
 def get_latest_agent_snapshot():
-    snapshot = load_latest_agent_snapshot(config)
+    snapshot = recover_latest_trace_snapshot_if_needed() or load_latest_agent_snapshot(config)
     return {"snapshot": snapshot}
 
 @app.get("/api/agent/history")

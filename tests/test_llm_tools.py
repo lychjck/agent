@@ -4,11 +4,61 @@ from copy import deepcopy
 from unittest.mock import patch
 
 from stock_assistant.core.config import DEFAULTS
+from stock_assistant.core.llm import resolve_llm_config
 from stock_assistant.core.llm_tools import call_llm_tool_step
 from stock_assistant.core.llm_tools import parse_llm_tool_step
 
 
 class TestLlmTools(unittest.TestCase):
+    def test_resolve_configured_model_profile_switches_provider(self):
+        config = deepcopy(DEFAULTS)
+        config["llm"] = {
+            **config["llm"],
+            "base_url": "http://10.33.207.193:1234/v1",
+            "model": "google/gemma-4-26b-a4b",
+            "api_key_env": "",
+            "stream": True,
+            "model_profiles": {
+                "deepseek-v4-pro": {
+                    "client": "openai",
+                    "base_url": "https://easyrouter.io/v1",
+                    "model": "deepseek-v4-pro",
+                    "api_key_env": "EASYROUTER_API_KEY",
+                    "stream": False,
+                }
+            },
+        }
+
+        resolved = resolve_llm_config(config, "deepseek-v4-pro")
+        llm = resolved["llm"]
+
+        self.assertEqual(llm["base_url"], "https://easyrouter.io/v1")
+        self.assertEqual(llm["model"], "deepseek-v4-pro")
+        self.assertEqual(llm["api_key_env"], "EASYROUTER_API_KEY")
+        self.assertFalse(llm["stream"])
+
+    def test_resolve_unknown_model_override_keeps_default_provider(self):
+        config = deepcopy(DEFAULTS)
+        config["llm"] = {
+            **config["llm"],
+            "base_url": "http://10.33.207.193:1234/v1",
+            "model": "google/gemma-4-26b-a4b",
+            "model_profiles": {
+                "deepseek-v4-pro": {
+                    "base_url": "https://example.test/v1",
+                    "model": "vendor/custom-deepseek",
+                    "api_key_env": "CUSTOM_KEY",
+                    "stream": True,
+                }
+            },
+        }
+
+        resolved = resolve_llm_config(config, "unconfigured/model")
+        llm = resolved["llm"]
+
+        self.assertEqual(llm["base_url"], "http://10.33.207.193:1234/v1")
+        self.assertEqual(llm["model"], "unconfigured/model")
+
     def test_parse_research_plan(self):
         step = parse_llm_tool_step(json.dumps({
             "type": "research_plan",
@@ -68,6 +118,19 @@ class TestLlmTools(unittest.TestCase):
         self.assertEqual(step.type, "observation_reflection")
         self.assertEqual(step.observation_reflection["next_action"], "continue_tools")
         self.assertEqual(step.missing_capabilities, ["缺少 ETF 持仓工具"])
+
+    def test_parse_observation_reflection_uses_thinking_trace_next_action(self):
+        step = parse_llm_tool_step(json.dumps({
+            "type": "observation_reflection",
+            "reasoning_summary": "证据足够，可以生成报告。",
+            "thinking_trace": {
+                "known_facts": ["已覆盖主要标的"],
+                "next_action": "final_report",
+            },
+        }))
+
+        self.assertEqual(step.type, "observation_reflection")
+        self.assertEqual(step.observation_reflection["next_action"], "final_report")
 
     def test_parse_markdown_final_report(self):
         step = parse_llm_tool_step("""```json

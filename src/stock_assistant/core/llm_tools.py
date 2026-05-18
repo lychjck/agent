@@ -293,6 +293,14 @@ def normalize_observation_reflection(payload: dict[str, Any]) -> dict[str, Any]:
     reflection = payload.get("observation_reflection", payload)
     if not isinstance(reflection, dict):
         raise ValueError("observation_reflection 必须是对象")
+    reflection = dict(reflection)
+    if not str(reflection.get("next_action", "")).strip():
+        next_action = str(payload.get("next_action", "")).strip()
+        thinking_trace = payload.get("thinking_trace")
+        if not next_action and isinstance(thinking_trace, dict):
+            next_action = str(thinking_trace.get("next_action", "")).strip()
+        if next_action:
+            reflection["next_action"] = next_action
     return reflection
 
 

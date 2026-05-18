@@ -97,6 +97,13 @@ const aiActionLabel = (type: string, prefix = '') => ({
   watch: `${prefix}观察`,
 }[type] || `${prefix}观察`);
 
+const severityTone = (severity: string) => {
+  if (severity === 'critical') return 'bg-red-500/15 text-red-300 border border-red-500/30';
+  if (severity === 'high') return 'bg-orange-500/15 text-orange-300 border border-orange-500/30';
+  if (severity === 'medium') return 'bg-amber-500/15 text-amber-300 border border-amber-500/30';
+  return 'bg-slate-500/10 text-slate-300 border border-slate-500/20';
+};
+
 const pctRows = (bucket: Record<string, number> | undefined) => Object.entries(bucket || {})
   .map(([key, pct]) => ({ key, label: labelOf(key), pct: Number(pct || 0) }))
   .filter((item) => item.pct > 0)
@@ -334,6 +341,7 @@ export default function App() {
       setAiData(snapshot.agent_report);
       setHasError(false);
       setCurrentStep(4);
+      setActiveTab('analysis');
     }
   };
 
@@ -918,6 +926,104 @@ export default function App() {
                               </span>
                             </div>
                             <p className="text-sm text-slate-400 leading-relaxed">{action.reason}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {aiData.diagnosis?.length > 0 && (
+                    <div className="mb-10">
+                      <h3 className="text-lg font-bold text-slate-300 mb-4 flex items-center gap-2">
+                        <AlertTriangle className="w-5 h-5 text-amber-400"/> 风险诊断
+                      </h3>
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        {aiData.diagnosis.map((item: any, i: number) => (
+                          <div key={item.id || i} className="bg-slate-950/30 border border-slate-800/70 rounded-2xl p-5">
+                            <div className="flex items-start justify-between gap-3 mb-3">
+                              <h4 className="font-bold text-slate-100 leading-snug">{item.title || '风险项'}</h4>
+                              <span className={`shrink-0 text-xs px-2.5 py-1 rounded-full font-bold ${severityTone(item.severity)}`}>
+                                {item.severity || 'watch'}
+                              </span>
+                            </div>
+                            <p className="text-sm text-slate-400 leading-relaxed">{item.explanation}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {aiData.holding_analysis?.length > 0 && (
+                    <div className="mb-10">
+                      <h3 className="text-lg font-bold text-slate-300 mb-4 flex items-center gap-2">
+                        <FileText className="w-5 h-5 text-indigo-400"/> 逐标的建议
+                      </h3>
+                      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                        {aiData.holding_analysis.map((item: any, i: number) => (
+                          <div key={`${item.target_code || 'holding'}-${i}`} className="bg-slate-800/35 border border-slate-700/50 rounded-2xl p-5 flex flex-col gap-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <div className="font-bold text-slate-100">{item.target_name || item.target_code || '标的'}</div>
+                                {item.target_code && <div className="text-xs text-slate-500 mt-1">{item.target_code}</div>}
+                              </div>
+                              <span className={`shrink-0 text-xs px-3 py-1 rounded-full font-bold ${aiActionTone(item.action_type)}`}>
+                                {aiActionLabel(item.action_type)}
+                              </span>
+                            </div>
+                            {item.title && <div className="text-sm font-semibold text-indigo-200">{item.title}</div>}
+                            <p className="text-sm text-slate-400 leading-relaxed">{item.reason}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {(aiData.watch_conditions?.length > 0 || aiData.questions?.length > 0) && (
+                    <div className="mb-10 grid grid-cols-1 lg:grid-cols-2 gap-5">
+                      {aiData.watch_conditions?.length > 0 && (
+                        <div className="bg-slate-950/25 border border-slate-800/70 rounded-2xl p-5">
+                          <h3 className="text-lg font-bold text-slate-300 mb-4 flex items-center gap-2">
+                            <CheckCircle2 className="w-5 h-5 text-emerald-400"/> 观察条件
+                          </h3>
+                          <div className="space-y-4">
+                            {aiData.watch_conditions.map((item: any, i: number) => (
+                              <div key={item.id || i} className="border-b border-slate-800/70 last:border-0 pb-4 last:pb-0">
+                                <div className="text-sm font-bold text-slate-100">{item.condition || item.metric}</div>
+                                <div className="text-xs text-slate-500 mt-1">{[item.target_code, item.metric].filter(Boolean).join(' / ')}</div>
+                                <p className="text-sm text-slate-400 mt-2 leading-relaxed">{item.reason}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {aiData.questions?.length > 0 && (
+                        <div className="bg-slate-950/25 border border-slate-800/70 rounded-2xl p-5">
+                          <h3 className="text-lg font-bold text-slate-300 mb-4 flex items-center gap-2">
+                            <MessageSquare className="w-5 h-5 text-cyan-400"/> 待确认问题
+                          </h3>
+                          <div className="space-y-4">
+                            {aiData.questions.map((item: any, i: number) => (
+                              <div key={item.id || i} className="border-b border-slate-800/70 last:border-0 pb-4 last:pb-0">
+                                <div className="text-sm font-bold text-slate-100">{item.question}</div>
+                                <p className="text-sm text-slate-400 mt-2 leading-relaxed">{item.reason}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {aiData.limitations?.length > 0 && (
+                    <div className="mb-10 bg-amber-500/5 border border-amber-500/20 rounded-2xl p-5">
+                      <h3 className="text-lg font-bold text-amber-200 mb-4 flex items-center gap-2">
+                        <ShieldAlert className="w-5 h-5"/> 数据限制
+                      </h3>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {aiData.limitations.map((item: string, i: number) => (
+                          <div key={i} className="text-sm text-amber-100/75 leading-relaxed flex gap-2">
+                            <span className="mt-2 h-1.5 w-1.5 rounded-full bg-amber-300/70 shrink-0"></span>
+                            <span>{item}</span>
                           </div>
                         ))}
                       </div>

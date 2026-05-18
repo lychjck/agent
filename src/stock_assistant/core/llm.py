@@ -8,6 +8,43 @@ from typing import Any
 
 from stock_assistant.core.utils import compact_result_for_llm, config_bool, log
 
+
+def configured_model_profiles(llm: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    raw_profiles = llm.get("model_profiles", {})
+    profiles: dict[str, dict[str, Any]] = {}
+    if isinstance(raw_profiles, dict):
+        for key, value in raw_profiles.items():
+            if isinstance(value, dict):
+                profiles[str(key)] = dict(value)
+    elif isinstance(raw_profiles, list):
+        for value in raw_profiles:
+            if not isinstance(value, dict):
+                continue
+            profile_id = str(value.get("id") or value.get("name") or "").strip()
+            if profile_id:
+                profiles[profile_id] = dict(value)
+    return profiles
+
+
+def resolve_llm_config(config: dict[str, Any], model_override: str | None = None) -> dict[str, Any]:
+    llm = dict(config["llm"])
+    requested_model = str(model_override or "").strip()
+    if not requested_model:
+        resolved_model = str(llm.get("model", "")).strip()
+    else:
+        profiles = configured_model_profiles(llm)
+        profile = profiles.get(requested_model)
+        if profile:
+            llm.update(profile)
+            resolved_model = str(profile.get("model") or requested_model)
+        else:
+            resolved_model = requested_model
+    llm["model"] = resolved_model
+    actual_config = dict(config)
+    actual_config["llm"] = llm
+    return actual_config
+
+
 def llm_enabled(config: dict[str, Any]) -> bool:
     value = config.get("llm", {}).get("enabled", False)
     if isinstance(value, bool):
@@ -143,9 +180,10 @@ def call_llm(
     model_override: str | None = None,
     request_kwargs: dict[str, Any] | None = None,
 ) -> str:
-    llm = config["llm"]
+    actual_config = resolve_llm_config(config, model_override)
+    llm = actual_config["llm"]
     base_url = str(llm["base_url"]).rstrip("/")
-    model = model_override or llm["model"]
+    model = llm["model"]
     context = str(llm.get("log_context", "")).strip()
     context_suffix = f" context={context}" if context else ""
     timeout = llm.get("timeout_seconds", 120)
@@ -160,10 +198,6 @@ def call_llm(
         log(f"LLM payload logging disabled; messages={len(messages)}", name="llm_payload")
 
     api_key = llm_api_key(llm) or "not-needed"
-    
-    actual_config = config.copy()
-    actual_config["llm"] = llm.copy()
-    actual_config["llm"]["model"] = model
     
     if str(llm.get("client", "openai")).strip().lower() == "openai":
         return openai_client_llm(messages, actual_config, api_key, request_kwargs=request_kwargs)

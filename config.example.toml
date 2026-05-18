@@ -201,3 +201,61 @@ supports_response_format = false
 repair_attempts = 1
 max_context_positions = 50
 log_payload = false
+
+# 前端模型下拉框会把 id 作为 model_override 传给后端。
+# 后端会按该 id 从 config.toml 的 llm.model_profiles 读取 provider 配置；
+# 如果没有匹配 profile，只覆盖 model，base_url/api_key_env 等继续使用上面的默认 [llm]。
+
+[llm.model_profiles."deepseek-v4-pro"]
+client = "openai"
+base_url = "https://easyrouter.io/v1"
+model = "deepseek-v4-pro"
+api_key_env = "EASYROUTER_API_KEY"
+stream = false
+disable_thinking = true
+reasoning_effort = ""
+
+[llm.model_profiles."deepseek-ai/DeepSeek-V3"]
+client = "openai"
+base_url = "https://api-inference.modelscope.cn/v1/"
+model = "deepseek-ai/DeepSeek-V3"
+api_key_env = "MODELSCOPE_API_KEY"
+stream = false
+disable_thinking = true
+reasoning_effort = ""
+
+[llm.model_profiles."deepseek-ai/DeepSeek-V4-Pro"]
+client = "openai"
+base_url = "https://api-inference.modelscope.cn/v1/"
+model = "deepseek-ai/DeepSeek-V4-Pro"
+api_key_env = "MODELSCOPE_API_KEY"
+stream = false
+disable_thinking = true
+reasoning_effort = ""
+
+[llm.model_profiles."inclusionAI/Ling-2.6-1T"]
+client = "openai"
+base_url = "https://api-inference.modelscope.cn/v1/"
+model = "inclusionAI/Ling-2.6-1T"
+api_key_env = "MODELSCOPE_API_KEY"
+stream = false
+disable_thinking = true
+reasoning_effort = ""
+
+[llm.model_profiles."ZhipuAI/GLM-5.1"]
+client = "openai"
+base_url = "https://api-inference.modelscope.cn/v1/"
+model = "ZhipuAI/GLM-5.1"
+api_key_env = "MODELSCOPE_API_KEY"
+stream = false
+disable_thinking = true
+reasoning_effort = ""
+
+[llm.model_profiles."moonshotai/Kimi-K2.5"]
+client = "openai"
+base_url = "https://api-inference.modelscope.cn/v1/"
+model = "moonshotai/Kimi-K2.5"
+api_key_env = "MODELSCOPE_API_KEY"
+stream = false
+disable_thinking = true
+reasoning_effort = ""
