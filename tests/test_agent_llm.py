@@ -81,7 +81,7 @@ class TestAgentLlm(unittest.TestCase):
                 "profit_pct": 5.0,
                 "current_value": 4200,
                 "weight": 100.0,
-                "action": "持有观察",
+                "action": "",
                 "reason": "价格站上 MA20 且 MA20 高于 MA60",
             }
         ]
@@ -133,6 +133,8 @@ class TestAgentLlm(unittest.TestCase):
         self.assertEqual(context["holdings"][0]["code"], "510300")
         self.assertIn("classification", context["holdings"][0])
         self.assertIn("technical", context["holdings"][0])
+        self.assertIn("technical_observations", context["holdings"][0]["technical"])
+        self.assertNotIn("rule_action", context["holdings"][0]["technical"])
         self.assertIn("holding:510300:technical", context["evidence_index"])
         self.assertIn("risk:concentration:position:510300", context["evidence_index"])
         self.assertIn("action:hold:trend_ok:510300", context["evidence_index"])
@@ -205,7 +207,7 @@ class TestAgentLlm(unittest.TestCase):
 
         self.assertEqual(len(report["holding_analysis"]), 1)
         self.assertEqual(report["holding_analysis"][0]["target_code"], "510300")
-        self.assertEqual(report["holding_analysis"][0]["action_type"], "hold")
+        self.assertEqual(report["holding_analysis"][0]["action_type"], "watch")
         self.assertEqual(report["action_items"][0]["target"], "沪深300ETF")
 
     def test_parse_agent_report_keeps_llm_per_holding_advice(self):
@@ -238,10 +240,9 @@ class TestAgentLlm(unittest.TestCase):
         self.assertEqual(report["action_items"][0]["type"], "watch")
         self.assertEqual(report["action_items"][0]["target"], "沪深300ETF")
 
-    def test_parse_agent_report_aligns_contradictory_action_copy_with_rule(self):
+    def test_parse_agent_report_does_not_force_trade_action_from_observations(self):
         context = self.context()
-        context["holdings"][0]["technical"]["rule_action"] = "减仓/暂停加仓"
-        context["holdings"][0]["technical"]["rule_reason"] = "收盘价低于 MA60，中期趋势偏弱"
+        context["holdings"][0]["technical"]["technical_observations"] = "收盘价低于 MA60"
         payload = {
             "summary": {"brief": "组合需要继续观察。"},
             "diagnosis": [],
@@ -267,9 +268,9 @@ class TestAgentLlm(unittest.TestCase):
         )
 
         item = report["holding_analysis"][0]
-        self.assertEqual(item["action_type"], "reduce")
-        self.assertEqual(item["title"], "减仓/暂停加仓")
-        self.assertIn("收盘价低于 MA60", item["reason"])
+        self.assertEqual(item["action_type"], "watch")
+        self.assertEqual(item["title"], "持有观察，等待修复")
+        self.assertIn("建议持有等待均线修复", item["reason"])
 
     def test_parse_agent_report_accepts_singular_evidence_ref_alias(self):
         context = self.context()
@@ -300,10 +301,9 @@ class TestAgentLlm(unittest.TestCase):
         self.assertEqual(report["holding_analysis"][0]["evidence_refs"], ["holding:510300:technical"])
         self.assertEqual(report["questions"], [])
 
-    def test_parse_agent_report_preserves_rule_reduce_when_llm_softens_to_watch(self):
+    def test_parse_agent_report_keeps_llm_watch_for_weak_observations(self):
         context = self.context()
-        context["holdings"][0]["technical"]["rule_action"] = "减仓/暂停加仓"
-        context["holdings"][0]["technical"]["rule_reason"] = "MA20 低于 MA60；距 120 日高点回撤 -15.00%"
+        context["holdings"][0]["technical"]["technical_observations"] = "MA20 低于 MA60；距 120 日高点回撤 -15.00%"
         payload = {
             "summary": {"brief": "组合需要控制回撤。"},
             "diagnosis": [],
@@ -327,13 +327,12 @@ class TestAgentLlm(unittest.TestCase):
             holdings=context["holdings"],
         )
 
-        self.assertEqual(report["holding_analysis"][0]["action_type"], "reduce")
-        self.assertEqual(report["action_items"][0]["type"], "reduce")
+        self.assertEqual(report["holding_analysis"][0]["action_type"], "watch")
+        self.assertEqual(report["action_items"][0]["type"], "watch")
 
-    def test_parse_agent_report_preserves_rule_buy_when_llm_softens_to_watch(self):
+    def test_parse_agent_report_keeps_llm_watch_for_positive_observations(self):
         context = self.context()
-        context["holdings"][0]["technical"]["rule_action"] = "可分批加仓"
-        context["holdings"][0]["technical"]["rule_reason"] = "价格站上 MA20 且 MA20 高于 MA60"
+        context["holdings"][0]["technical"]["technical_observations"] = "价格站上 MA20 且 MA20 高于 MA60"
         payload = {
             "summary": {"brief": "趋势改善。"},
             "diagnosis": [],
@@ -357,8 +356,8 @@ class TestAgentLlm(unittest.TestCase):
             holdings=context["holdings"],
         )
 
-        self.assertEqual(report["holding_analysis"][0]["action_type"], "buy")
-        self.assertEqual(report["action_items"][0]["type"], "buy")
+        self.assertEqual(report["holding_analysis"][0]["action_type"], "watch")
+        self.assertEqual(report["action_items"][0]["type"], "watch")
 
     def test_parse_agent_report_removes_unknown_action_and_bad_evidence(self):
         context = self.context()
@@ -428,7 +427,7 @@ class TestAgentLlm(unittest.TestCase):
         self.assertEqual(report["summary"]["status"], "fallback")
         self.assertEqual(report["action_items"][0]["id"], self.candidate_action.id)
 
-    def test_fallback_agent_report_uses_rule_actions(self):
+    def test_fallback_agent_report_uses_technical_observations(self):
         context = self.context()
         report = fallback_agent_report([self.candidate_action], self.observations, "LLM 关闭", context["holdings"])
 

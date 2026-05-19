@@ -248,7 +248,7 @@ def generate_structured_llm_commentary(
 
     prompt = (
         "/no_think\n"
-        "请作为专业投资顾问，基于下面 JSON 里的 ETF 持仓、技术指标和规则信号，进行分析。\n"
+        "请作为专业投资顾问，基于下面 JSON 里的 ETF 持仓和技术指标事实，进行分析。\n"
         "要求：\n"
         "1. 必须并且只能输出 JSON 格式的结果，不要输出任何多余的废话和 markdown 包裹。\n"
         f"2. 返回的 JSON 必须严格遵守以下结构：\n{json_schema}\n"
@@ -288,10 +288,10 @@ def generate_llm_commentary(results: list[dict[str, Any]], config: dict[str, Any
     }
     prompt = (
         "/no_think\n"
-        "请基于下面 JSON 里的 ETF 持仓、技术指标和规则信号，写一段中文日报解读。\n"
+        "请基于下面 JSON 里的 ETF 持仓和技术指标事实，写一段中文日报解读。\n"
         "要求：\n"
         "1. 只能使用 JSON 中的数据，不要编造新闻、估值、政策、财报或宏观信息。\n"
-        "2. 必须区分数据事实、规则信号和你的推断。\n"
+        "2. 必须区分数据事实和你的推断。\n"
         "3. 不要写确定性收益预测，不要承诺买卖点。\n"
         "4. 输出 Markdown，包含：组合层面、单只ETF、今日动作、明日观察条件、风险提示。\n"
         "5. 动作建议只能使用保守表述，例如分批、观察、暂停加仓、再平衡，不要使用满仓/清仓/梭哈。\n\n"

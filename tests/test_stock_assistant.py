@@ -28,7 +28,7 @@ class StockAssistantTest(unittest.TestCase):
         self.assertEqual(holdings[0].market_value, 420)
         self.assertEqual(holdings[0].profit_pct, 5.0)
 
-    def test_analyze_one_marks_uptrend_as_batch_add(self):
+    def test_analyze_one_returns_observations_without_trade_action(self):
         closes = [1 + index * 0.004 + 0.08 * math.sin(index / 5 + 3) for index in range(140)]
         bars = [
             sa.Bar(
@@ -48,9 +48,10 @@ class StockAssistantTest(unittest.TestCase):
         result = sa.analyze_one(holding, bars, sa.DEFAULTS, total_value=1000)
 
         self.assertTrue(result["ok"])
-        self.assertEqual(result["action"], "可分批加仓")
+        self.assertEqual(result["action"], "")
+        self.assertIn("高于 MA20", result["reason"])
 
-    def test_decide_action_flags_weak_trend(self):
+    def test_decide_action_reports_weak_trend_observations(self):
         action, reasons = sa.decide_action(
             close=0.9,
             ma20=0.95,
@@ -63,8 +64,9 @@ class StockAssistantTest(unittest.TestCase):
             config=sa.DEFAULTS,
         )
 
-        self.assertEqual(action, "减仓/暂停加仓")
+        self.assertEqual(action, "")
         self.assertGreaterEqual(len(reasons), 2)
+        self.assertTrue(any("低于 MA60" in reason for reason in reasons))
 
     def test_extract_cookie_from_curl(self):
         curl_text = "curl 'https://tzzb.10jqka.com.cn/pc/' -H 'Cookie: userid=dummy; session=dummy'"

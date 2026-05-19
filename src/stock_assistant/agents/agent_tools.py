@@ -689,7 +689,7 @@ def build_agent_tool_registry(config: dict[str, Any]) -> dict[str, AgentToolSpec
         ),
         AgentToolSpec(
             name="get_holding_technical",
-            description="读取指定当前持仓标的的技术指标和规则信号。",
+            description="读取指定当前持仓标的的技术指标和事实观察。",
             args_model=GetHoldingTechnicalArgs,
             handler=handle_get_holding_technical,
         ),

@@ -258,8 +258,7 @@ def technical_record(item: dict[str, Any]) -> dict[str, Any]:
         "volume_ratio": safe_float(item.get("vol_ratio")),
         "profit_pct": safe_float(item.get("profit_pct")),
         "portfolio_weight_pct": safe_float(item.get("weight")),
-        "rule_action": str(item.get("action", "")),
-        "rule_reason": sanitize_text(item.get("reason", ""), 500),
+        "technical_observations": sanitize_text(item.get("reason", ""), 500),
     }
 
 
@@ -406,7 +405,7 @@ def agent_report_schema_hint() -> dict[str, Any]:
                 "id": "diag:unique_id",
                 "title": "诊断标题",
                 "severity": "low|medium|high|critical",
-                "explanation": "解释事实、规则信号和推断的关系",
+                "explanation": "解释数据事实和推断的关系",
                 "evidence_refs": ["必须来自输入 evidence_index 的 key"],
             }
         ],
@@ -468,7 +467,7 @@ def build_agent_report_messages(context: dict[str, Any]) -> list[dict[str, str]]
         "请基于下面的持仓上下文生成结构化诊断。输出必须符合给定 JSON schema。\n"
         "分析重点：组合集中度、资产/行业/主题暴露、分类可信度、技术趋势与持仓盈亏是否匹配、历史变化、规则候选动作是否有证据支持。\n"
         "必须为每个 holdings 中的标的输出一条 holding_analysis。holding_analysis 是单标的解释型建议，不是直接交易指令；没有用户确认策略时，不要给目标仓位或金额。\n"
-        "holding_analysis.action_type 必须尊重 holdings[].technical.rule_action：'减仓/暂停加仓' 用 reduce，'可分批加仓' 用 buy，'持有观察' 用 hold，分类不足用 classify_required。不要把明确的规则信号全部改成 watch。\n"
+        "holding_analysis.action_type 不得由本地技术指标直接推导买卖动作；技术指标只作为事实证据。没有用户确认策略或候选动作时，优先使用 watch 并解释证据边界。分类不足时使用 classify_required。\n"
         "如果证据不足，写入 limitations 或 questions，不要硬给交易结论。\n\n"
         f"输出 schema:\n{schema_hint}\n\n"
         f"输入 JSON:\n{context_json}"
@@ -564,42 +563,27 @@ def legacy_holding_action_item(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def holding_action_type_from_rule(rule_action: str, classification: dict[str, Any]) -> str:
-    if classification.get("asset_class") == "unknown":
-        return "classify_required"
-    if "减仓" in rule_action:
-        return "reduce"
-    if "加仓" in rule_action:
-        return "buy"
-    if "再平衡" in rule_action:
-        return "rebalance"
-    if "持有" in rule_action:
-        return "hold"
-    return "watch"
-
-
 def deterministic_holding_action_type(holding: dict[str, Any] | None) -> str:
     if not isinstance(holding, dict):
         return "watch"
-    technical = holding.get("technical", {}) if isinstance(holding.get("technical"), dict) else {}
     classification = holding.get("classification", {}) if isinstance(holding.get("classification"), dict) else {}
-    return holding_action_type_from_rule(str(technical.get("rule_action", "") or ""), classification)
+    if classification.get("asset_class") == "unknown":
+        return "classify_required"
+    return "watch"
 
 
 def action_copy_for_rule(action_type: str, holding: dict[str, Any] | None) -> tuple[str, str]:
     technical = holding.get("technical", {}) if isinstance(holding, dict) and isinstance(holding.get("technical"), dict) else {}
-    rule_action = str(technical.get("rule_action", "") or "").strip()
-    rule_reason = str(technical.get("rule_reason", "") or "").strip()
+    observations = str(technical.get("technical_observations", "") or "").strip()
     title_by_type = {
-        "buy": "可分批加仓",
-        "reduce": "减仓或暂停加仓",
-        "hold": "持有观察",
-        "watch": "继续观察",
-        "rebalance": "再平衡",
+        "buy": "候选买入动作待复核",
+        "reduce": "候选减仓动作待复核",
+        "hold": "继续跟踪持仓",
+        "watch": "基于现有数据观察",
+        "rebalance": "候选再平衡动作待复核",
         "classify_required": "需要先补充分信息",
     }
-    title = rule_action or title_by_type.get(action_type, "继续观察")
-    return title, rule_reason
+    return title_by_type.get(action_type, "基于现有数据观察"), observations
 
 
 def text_contradicts_action(action_type: str, title: str, reason: str) -> bool:
@@ -621,15 +605,15 @@ def normalize_holding_action_copy(item: dict[str, Any], holding: dict[str, Any] 
     reason = str(item.get("reason", "") or "")
     if not text_contradicts_action(action_type, title, reason):
         return item
-    rule_title, rule_reason = action_copy_for_rule(action_type, holding)
+    fallback_title, observation_reason = action_copy_for_rule(action_type, holding)
     original_reason = reason.strip()
-    item["title"] = rule_title
-    if rule_reason:
-        item["reason"] = rule_reason
-        if original_reason and original_reason != rule_reason:
-            item["reason"] = f"{rule_reason} 原始模型说明：{original_reason}"
+    item["title"] = fallback_title
+    if observation_reason:
+        item["reason"] = observation_reason
+        if original_reason and original_reason != observation_reason:
+            item["reason"] = f"{observation_reason} 原始模型说明：{original_reason}"
     else:
-        item["reason"] = original_reason or "动作类型已按规则信号修正。"
+        item["reason"] = original_reason or "动作类型已按结构化校验修正。"
     return item
 
 
@@ -640,20 +624,19 @@ def fallback_holding_analysis_from_context(holdings: list[dict[str, Any]]) -> li
         name = str(holding.get("name", ""))
         technical = holding.get("technical", {}) if isinstance(holding.get("technical"), dict) else {}
         classification = holding.get("classification", {}) if isinstance(holding.get("classification"), dict) else {}
-        rule_action = str(technical.get("rule_action", "") or "")
-        rule_reason = str(technical.get("rule_reason", "") or "")
+        observations = str(technical.get("technical_observations", "") or "")
         action_type = deterministic_holding_action_type(holding)
-        if rule_reason:
-            reason = rule_reason
+        if observations:
+            reason = observations
         elif classification.get("asset_class") == "unknown":
             reason = "分类不足，先确认标的资产类别、行业和策略属性。"
         else:
-            reason = "没有足够的新增信号，按当前规则保持观察。"
+            reason = "现有技术指标未提供足够事实，需要结合市场环境和用户策略判断。"
         analysis.append({
             "target_code": code,
             "target_name": name,
             "action_type": action_type,
-            "title": rule_action or "持有观察",
+            "title": "基于现有数据观察" if action_type == "watch" else "需要先补充分信息",
             "reason": reason,
             "evidence_refs": filter_evidence_refs(
                 [f"holding:{code}:technical", f"holding:{code}:classification"],
@@ -752,13 +735,13 @@ def validate_agent_report(
             continue
         if item["action_type"] not in VALID_HOLDING_ACTION_TYPES:
             item["action_type"] = "watch"
-        rule_action_type = deterministic_holding_action_type(holding_by_code.get(code))
-        if rule_action_type in {"buy", "reduce", "rebalance", "classify_required"}:
-            item["action_type"] = rule_action_type
+        deterministic_action_type = deterministic_holding_action_type(holding_by_code.get(code))
+        if deterministic_action_type == "classify_required":
+            item["action_type"] = deterministic_action_type
         if not item.get("target_name") and code in holding_by_code:
             item["target_name"] = str(holding_by_code[code].get("name", ""))
         if not item.get("title"):
-            item["title"] = "持有观察"
+            item["title"] = "基于现有数据观察"
         item = normalize_holding_action_copy(item, holding_by_code.get(code))
         item["evidence_refs"] = filter_evidence_refs(item.get("evidence_refs", []), evidence_index)
         if code:

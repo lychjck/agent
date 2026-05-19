@@ -112,8 +112,7 @@ def compact_result_for_llm(item: dict[str, Any]) -> dict[str, Any]:
         "volume_ratio": item.get("vol_ratio"),
         "profit_pct": item.get("profit_pct"),
         "portfolio_weight_pct": item.get("weight"),
-        "rule_action": item.get("action"),
-        "rule_reason": item.get("reason"),
+        "technical_observations": item.get("reason"),
     }
 
 def config_bool(value: Any) -> bool:

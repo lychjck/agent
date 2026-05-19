@@ -54,38 +54,33 @@ def decide_action(
     weight: float | None,
     config: dict[str, Any],
 ) -> tuple[str, list[str]]:
-    reasons: list[str] = []
-    risk_reasons: list[str] = []
-    buy_reasons: list[str] = []
+    observations: list[str] = []
 
     if profit_pct is not None and profit_pct <= float(config["analysis"]["loss_alert_pct"]):
-        risk_reasons.append(f"持仓收益 {profit_pct:.2f}% 已触发亏损警戒")
+        observations.append(
+            f"持仓收益 {profit_pct:.2f}% 低于亏损警戒阈值 {float(config['analysis']['loss_alert_pct']):.2f}%"
+        )
     if weight is not None and weight >= float(config["analysis"]["max_single_position_pct"]):
-        risk_reasons.append(f"单只仓位 {weight:.2f}% 偏高")
+        observations.append(
+            f"单只仓位 {weight:.2f}% 高于配置阈值 {float(config['analysis']['max_single_position_pct']):.2f}%"
+        )
     if ma60 is not None and close < ma60:
-        risk_reasons.append("收盘价低于 MA60，中期趋势偏弱")
+        observations.append(f"收盘价 {close:.4f} 低于 MA60 {ma60:.4f}")
     if ma20 is not None and ma60 is not None and ma20 < ma60:
-        risk_reasons.append("MA20 低于 MA60，短中期均线未修复")
+        observations.append(f"MA20 {ma20:.4f} 低于 MA60 {ma60:.4f}")
     if drawdown is not None and drawdown <= -12:
-        risk_reasons.append(f"距 120 日高点回撤 {drawdown:.2f}%")
+        observations.append(f"距 120 日高点回撤 {drawdown:.2f}%")
     if rsi14 is not None and rsi14 >= 75:
-        risk_reasons.append(f"RSI14={rsi14:.2f}，短线过热")
+        observations.append(f"RSI14={rsi14:.2f}")
 
     if ma20 is not None and ma60 is not None and close > ma20 > ma60:
-        buy_reasons.append("价格站上 MA20 且 MA20 高于 MA60")
+        observations.append(f"收盘价 {close:.4f} 高于 MA20 {ma20:.4f}，MA20 高于 MA60 {ma60:.4f}")
     if ma120 is not None and close > ma120:
-        buy_reasons.append("价格位于 MA120 上方")
+        observations.append(f"收盘价 {close:.4f} 高于 MA120 {ma120:.4f}")
     if rsi14 is not None and 45 <= rsi14 <= 68:
-        buy_reasons.append(f"RSI14={rsi14:.2f}，未明显过热")
+        observations.append(f"RSI14={rsi14:.2f}")
 
-    if len(risk_reasons) >= 2:
-        return "减仓/暂停加仓", risk_reasons
-    if risk_reasons:
-        return "持有观察", risk_reasons + buy_reasons[:1]
-    if len(buy_reasons) >= 2:
-        reasons.extend(buy_reasons)
-        return "可分批加仓", reasons
-    return "持有观察", buy_reasons or ["趋势信号不充分"]
+    return "", observations or ["技术指标未触发配置阈值"]
 
 def analyze_one(holding: Holding, bars: list[Bar], config: dict[str, Any], total_value: float | None) -> dict[str, Any]:
     min_days = int(config["analysis"]["min_history_days"])
