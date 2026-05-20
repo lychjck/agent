@@ -6,12 +6,20 @@ from copy import deepcopy
 from unittest.mock import patch
 
 from stock_assistant.agents.agent_loop import (
+    model_context_settings,
     build_initial_agent_messages,
+    compact_agent_messages_if_needed,
     final_report_missing_holding_analysis,
     merge_final_report_patch,
     missing_technical_codes,
     run_tool_agent_events,
     split_oversized_tool_calls,
+)
+from stock_assistant.agents.agent_loop_state import AgentLoopState
+from stock_assistant.agents.agent_coverage import (
+    build_external_research_gate_prompt,
+    build_holding_analysis_gate_prompt,
+    external_research_gap,
 )
 from stock_assistant.agents.agent_workspace import AgentWorkspace
 from stock_assistant.core.config import DEFAULTS
@@ -241,6 +249,89 @@ class TestAgentLoop(unittest.TestCase):
         self.assertGreaterEqual(events[-1]["checkpoint"]["next_turn"], 2)
         self.assertIn("messages", events[-1]["checkpoint"])
 
+    def test_tool_agent_retries_context_error_after_compaction(self):
+        config = self.config()
+        config["agent"]["max_tool_turns"] = 1
+        response = LlmToolStep(
+            type="research_plan",
+            research_plan={"information_needs": ["当前持仓"], "available_tool_mapping": [], "missing_capabilities": []},
+            raw_text=json.dumps({"type": "research_plan", "research_plan": {"information_needs": ["当前持仓"]}}),
+        )
+
+        with patch(
+            "stock_assistant.agents.agent_loop.call_llm_tool_step",
+            side_effect=[RuntimeError("Model unloaded."), response],
+        ) as call_llm:
+            events = asyncio.run(
+                collect_events(
+                    config,
+                    goal="分析当前持仓",
+                    cached_results=[],
+                    save_snapshot=False,
+                    save_report=False,
+                )
+            )
+
+        self.assertEqual(call_llm.call_count, 2)
+        self.assertIn("context_compaction", [event["step"] for event in events])
+        self.assertIn("research_plan", [event["step"] for event in events])
+
+    def test_model_context_settings_prefers_model_profile(self):
+        config = self.config()
+        config["llm"]["model_profiles"] = {
+            "deepseek-v4-pro": {
+                "model": "deepseek-v4-pro",
+                "max_llm_context_chars": 120000,
+                "llm_context_keep_recent": 12,
+                "compact_tool_observations": False,
+            }
+        }
+
+        settings = model_context_settings(config, "deepseek-v4-pro")
+
+        self.assertEqual(settings["max_llm_context_chars"], 120000)
+        self.assertEqual(settings["llm_context_keep_recent"], 12)
+        self.assertFalse(settings["compact_tool_observations"])
+
+    def test_model_context_settings_default_does_not_compact(self):
+        settings = model_context_settings(self.config(), "unknown-model")
+
+        self.assertNotIn("max_llm_context_chars", settings)
+        self.assertFalse(settings["compact_tool_observations"])
+
+    def test_context_compaction_skips_when_threshold_missing(self):
+        state = AgentLoopState(messages=[
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": json.dumps({"type": "research_plan", "reasoning_summary": "x" * 5000})},
+            {"role": "user", "content": "current"},
+        ])
+        settings = {
+            "llm_context_keep_recent": 1,
+        }
+
+        skipped, _ = compact_agent_messages_if_needed(state=state, context_settings=settings)
+
+        self.assertEqual(skipped, 0)
+        self.assertNotIn("[context_compacted]", state.messages[2]["content"])
+
+    def test_context_compaction_uses_profile_threshold(self):
+        state = AgentLoopState(messages=[
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": json.dumps({"type": "research_plan", "reasoning_summary": "x" * 5000})},
+            {"role": "user", "content": "current"},
+        ])
+        settings = {
+            "max_llm_context_chars": 1000,
+            "llm_context_keep_recent": 1,
+        }
+
+        forced, _ = compact_agent_messages_if_needed(state=state, context_settings=settings)
+
+        self.assertGreaterEqual(forced, 1)
+        self.assertIn("[context_compacted]", state.messages[2]["content"])
+
     def test_tool_agent_requires_research_plan_first(self):
         config = self.config()
         response = LlmToolStep(
@@ -389,6 +480,65 @@ class TestAgentLoop(unittest.TestCase):
         missing = final_report_missing_holding_analysis(workspace, "分析每个 ETF 的建议", report)
 
         self.assertEqual(missing, [])
+
+    def test_external_research_gate_prompt_limits_current_batch(self):
+        gap = {
+            "reasons": ["权重>=1%的标的仍有 6 个未在搜索 query 中逐项覆盖"],
+            "missing_holding_research": [
+                {"code": f"51030{index}", "name": f"ETF{index}", "weight_pct": 10 - index}
+                for index in range(6)
+            ],
+        }
+
+        prompt = build_external_research_gate_prompt(gap)
+
+        self.assertIn("本轮只补前 4 个核心标的", prompt)
+        self.assertIn("其余 2 个等下一轮再补", prompt)
+        self.assertIn("当前轮次 web_search.targets 最多传 4 个 target", prompt)
+        self.assertIn("510300 ETF0", prompt)
+        self.assertIn("510303 ETF3", prompt)
+        self.assertNotIn("510304 ETF4", prompt)
+
+    def test_external_research_gap_for_each_etf_goal_filters_non_etf_funds(self):
+        workspace = AgentWorkspace(
+            self.config(),
+            holdings=[
+                Holding(code="512890", name="红利低波", market_value=800, asset_type="etf"),
+                Holding(code="000259", name="农银区间收益混合", market_value=300, asset_type="fund"),
+                Holding(code="513130", name="恒生科技", market_value=200, asset_type="etf"),
+                Holding(code="217008", name="招商安本增利债券C", market_value=200, asset_type="fund"),
+            ],
+        )
+
+        gap = external_research_gap(
+            workspace,
+            "分析当前持仓，给出每个 ETF 的建议",
+            {"web_search": object(), "web_read": object()},
+            web_search_queries=["512890 红利低波 近期表现"],
+            web_search_target_codes=["512890"],
+            web_read_count=1,
+        )
+
+        self.assertIsNotNone(gap)
+        self.assertEqual(
+            [item["code"] for item in gap["missing_holding_research"]],
+            ["513130"],
+        )
+
+    def test_holding_analysis_gate_prompt_limits_current_batch(self):
+        missing = [
+            {"code": f"51030{index}", "name": f"ETF{index}", "asset_type": "etf"}
+            for index in range(7)
+        ]
+
+        prompt = build_holding_analysis_gate_prompt(missing)
+
+        self.assertIn("本轮只补前 4 个缺失标的", prompt)
+        self.assertIn("其余 3 个等下一轮再补", prompt)
+        self.assertIn("holding_analysis 只写本轮列出的最多 4 个标的", prompt)
+        self.assertIn("510300 ETF0", prompt)
+        self.assertIn("510303 ETF3", prompt)
+        self.assertNotIn("510304 ETF4", prompt)
 
 
 if __name__ == "__main__":

@@ -118,6 +118,21 @@ def update_agent_run(run_id: str, **updates: object) -> None:
         record["updated_at"] = dt.datetime.now().isoformat(timespec="seconds")
 
 
+def agent_run_cancel_requested(run_id: str) -> bool:
+    with agent_runs_lock:
+        record = agent_runs.get(run_id)
+        return bool(record and record.get("cancel_requested"))
+
+
+def mark_agent_run_cancelled(run_id: str, message: str = "用户已终止 AI 分析") -> None:
+    update_agent_run(
+        run_id,
+        status="cancelled",
+        cancel_requested=True,
+        error=message,
+    )
+
+
 def latest_agent_trace_path() -> Path | None:
     trace_dir = Path(config.get("agent", {}).get("trace_dir", "data/state/agent_traces")).expanduser()
     if not trace_dir.exists():
@@ -213,7 +228,13 @@ async def run_agent_job(run_id: str, req: AgentRunRequest) -> None:
             )
 
         async for event in event_iter:
+            if agent_run_cancel_requested(run_id):
+                mark_agent_run_cancelled(run_id)
+                return
             append_agent_run_event(run_id, event)
+            if agent_run_cancel_requested(run_id):
+                mark_agent_run_cancelled(run_id)
+                return
             if event.get("step") == "error":
                 update_agent_run(
                     run_id,
@@ -238,7 +259,7 @@ async def run_agent_job(run_id: str, req: AgentRunRequest) -> None:
         if status == "running":
             update_agent_run(run_id, status="completed")
     except asyncio.CancelledError:
-        update_agent_run(run_id, status="cancelled", error="agent run cancelled")
+        mark_agent_run_cancelled(run_id, "agent run cancelled")
         append_agent_run_event(run_id, {"step": "error", "status": "执行已取消", "error": "agent run cancelled"})
         raise
     except Exception as e:  # noqa: BLE001
@@ -249,6 +270,80 @@ async def run_agent_job(run_id: str, req: AgentRunRequest) -> None:
 
 def run_agent_job_in_thread(run_id: str, req: AgentRunRequest) -> None:
     asyncio.run(run_agent_job(run_id, req))
+
+
+def infer_model_provider(base_url: str) -> str:
+    normalized = base_url.lower()
+    if "easyrouter" in normalized:
+        return "EasyRouter"
+    if "modelscope" in normalized:
+        return "ModelScope"
+    if "localhost" in normalized or "127.0.0.1" in normalized or "10." in normalized:
+        return "Local"
+    return "OpenAI Compatible"
+
+
+def model_display_name(model_id: str) -> str:
+    aliases = {
+        "deepseek-v4-pro": "DeepSeek V4 Pro",
+        "google/gemma-4-26b-a4b": "Gemma 4 26B A4B",
+        "inclusionAI/Ling-2.6-1T": "Ling-2.6-1T",
+        "ZhipuAI/GLM-5.1": "GLM-5.1",
+        "moonshotai/Kimi-K2.5": "Kimi-K2.5",
+        "deepseek-ai/DeepSeek-V3": "DeepSeek V3",
+        "deepseek-ai/DeepSeek-V4-Pro": "DeepSeek V4 Pro",
+    }
+    if model_id in aliases:
+        return aliases[model_id]
+    return model_id.rsplit("/", 1)[-1] if "/" in model_id else model_id
+
+
+def configured_llm_models() -> list[dict[str, str | bool]]:
+    llm_config = config.get("llm", {})
+    default_model = str(llm_config.get("model", "")).strip()
+    models: list[dict[str, str | bool]] = []
+    if default_model:
+        models.append({
+            "id": default_model,
+            "name": model_display_name(default_model),
+            "provider": infer_model_provider(str(llm_config.get("base_url", ""))),
+            "default": True,
+        })
+
+    profiles = llm_config.get("model_profiles", {})
+    if isinstance(profiles, dict):
+        for profile_id, profile in profiles.items():
+            if not isinstance(profile, dict):
+                continue
+            model_id = str(profile_id).strip()
+            if not model_id:
+                continue
+            resolved_model = str(profile.get("model") or model_id).strip()
+            models.append({
+                "id": model_id,
+                "name": model_display_name(resolved_model),
+                "provider": infer_model_provider(str(profile.get("base_url", llm_config.get("base_url", "")))),
+                "default": model_id == default_model,
+            })
+
+    deduped: list[dict[str, str | bool]] = []
+    seen: set[str] = set()
+    for item in models:
+        model_id = str(item.get("id", "")).strip()
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        deduped.append(item)
+    return deduped
+
+
+@app.get("/api/agent/models")
+def get_agent_models():
+    return {
+        "models": configured_llm_models(),
+        "default_model": str(config.get("llm", {}).get("model", "")).strip(),
+    }
+
 
 @app.get("/api/holdings")
 def get_holdings():
@@ -478,6 +573,23 @@ async def resume_agent_run(run_id: str):
         agent_runs[run_id]["thread"] = thread
     thread.start()
     return {"run_id": run_id, "status": "queued"}
+
+
+@app.post("/api/agent/run/{run_id}/cancel")
+async def cancel_agent_run(run_id: str):
+    with agent_runs_lock:
+        record = agent_runs.get(run_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="agent run not found")
+        status = str(record.get("status") or "")
+        if status in {"completed", "cancelled", "error"}:
+            return {"run_id": run_id, "status": status}
+    mark_agent_run_cancelled(run_id)
+    append_agent_run_event(run_id, {
+        "step": "cancelled",
+        "status": "用户已终止 AI 分析",
+    })
+    return {"run_id": run_id, "status": "cancelled"}
 
 
 @app.get("/api/agent/run/{run_id}")

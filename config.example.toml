@@ -207,6 +207,22 @@ log_payload = false
 # 前端模型下拉框会把 id 作为 model_override 传给后端。
 # 后端会按该 id 从 config.toml 的 llm.model_profiles 读取 provider 配置；
 # 如果没有匹配 profile，只覆盖 model，base_url/api_key_env 等继续使用上面的默认 [llm]。
+# 以下字段是该模型运行 tool-agent 时的上下文策略，直接写在 model profile 内：
+# max_llm_context_chars 存在时才启用主动上下文压缩；不写就不压缩。
+# compact_tool_observations = false 会让大上下文模型看到完整工具 observation。
+
+[llm.model_profiles."google/gemma-4-26b-a4b"]
+client = "openai"
+base_url = "http://10.33.207.193:1234/v1"
+model = "google/gemma-4-26b-a4b"
+api_key_env = ""
+stream = true
+disable_thinking = true
+reasoning_effort = ""
+
+max_llm_context_chars = 60000
+llm_context_keep_recent = 6
+compact_tool_observations = true
 
 [llm.model_profiles."deepseek-v4-pro"]
 client = "openai"
@@ -217,6 +233,9 @@ stream = false
 disable_thinking = true
 reasoning_effort = ""
 
+llm_context_keep_recent = 12
+compact_tool_observations = false
+
 [llm.model_profiles."deepseek-ai/DeepSeek-V3"]
 client = "openai"
 base_url = "https://api-inference.modelscope.cn/v1/"
@@ -226,6 +245,9 @@ stream = false
 disable_thinking = true
 reasoning_effort = ""
 
+llm_context_keep_recent = 12
+compact_tool_observations = false
+
 [llm.model_profiles."deepseek-ai/DeepSeek-V4-Pro"]
 client = "openai"
 base_url = "https://api-inference.modelscope.cn/v1/"
@@ -234,6 +256,9 @@ api_key_env = "MODELSCOPE_API_KEY"
 stream = false
 disable_thinking = true
 reasoning_effort = ""
+
+llm_context_keep_recent = 12
+compact_tool_observations = false
 
 [llm.model_profiles."inclusionAI/Ling-2.6-1T"]
 client = "openai"

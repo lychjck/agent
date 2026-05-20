@@ -1,4 +1,5 @@
 import datetime as dt
+import json
 import tempfile
 import unittest
 from copy import deepcopy
@@ -6,9 +7,11 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from stock_assistant.agents.agent_tools import build_agent_tool_registry
-from stock_assistant.agents.agent_executor import truncate_payload
+from stock_assistant.agents.agent_loop_state import AgentLoopState
+from stock_assistant.agents.agent_executor import ToolObservation, tool_observation_message, truncate_payload
 from stock_assistant.agents.agent_workspace import AgentWorkspace
 from stock_assistant.core.config import DEFAULTS
+from stock_assistant.core.llm_tools import LlmToolCall
 from stock_assistant.core.models import Bar, Holding
 
 
@@ -74,6 +77,67 @@ class TestAgentTools(unittest.TestCase):
         self.assertEqual(len(second), 1)
         fetch_bars.assert_called_once()
 
+    def test_technical_observation_message_compacts_for_llm(self):
+        call = LlmToolCall(id="call_001", name="get_holding_technical", arguments={"codes": ["510300"]})
+        observation = ToolObservation(
+            call_id="call_001",
+            tool_name="get_holding_technical",
+            ok=True,
+            result={
+                "technical": {
+                    "510300": {
+                        "ok": True,
+                        "latest_date": "2026-05-20",
+                        "latest_close": 5.123,
+                        "ma20": 5.0,
+                        "ma60": 4.8,
+                        "ma120": 4.6,
+                        "ret5_pct": 1.2,
+                        "rsi14": 55.0,
+                        "drawdown_from_120d_high_pct": -3.4,
+                        "profit_pct": 2.3,
+                        "portfolio_weight_pct": 10.5,
+                        "technical_observations": "收盘价高于 MA60",
+                        "volume_ratio": None,
+                    }
+                },
+                "summary": "返回 1 个标的技术指标",
+            },
+            summary="返回 1 个标的技术指标",
+        )
+
+        message = tool_observation_message(call, observation)
+
+        self.assertIn('"llm_compacted": true', message["content"])
+        self.assertIn('"latest_close": 5.123', message["content"])
+        self.assertIn("收盘价高于 MA60", message["content"])
+        self.assertNotIn('"ma20"', message["content"])
+        self.assertNotIn('"volume_ratio"', message["content"])
+
+    def test_technical_observation_message_can_keep_full_payload(self):
+        call = LlmToolCall(id="call_001", name="get_holding_technical", arguments={"codes": ["510300"]})
+        observation = ToolObservation(
+            call_id="call_001",
+            tool_name="get_holding_technical",
+            ok=True,
+            result={
+                "technical": {
+                    "510300": {
+                        "latest_close": 5.123,
+                        "ma20": 5.0,
+                        "ma60": 4.8,
+                    }
+                },
+                "summary": "返回 1 个标的技术指标",
+            },
+            summary="返回 1 个标的技术指标",
+        )
+
+        message = tool_observation_message(call, observation, compact=False)
+
+        self.assertIn('"ma20": 5.0', message["content"])
+        self.assertNotIn('"llm_compacted": true', message["content"])
+
     def test_trace_context_does_not_include_secrets(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = deepcopy(self.config)
@@ -87,6 +151,94 @@ class TestAgentTools(unittest.TestCase):
         serialized = str(context)
         self.assertNotIn("COOKIE_SHOULD_NOT_LEAK", serialized)
         self.assertNotIn("KEY_SHOULD_NOT_LEAK", serialized)
+
+    def test_workspace_registers_web_search_evidence(self):
+        workspace = AgentWorkspace(self.config, holdings=self.holdings)
+        call = LlmToolCall(id="call_001", name="web_search", arguments={"query": "沪深300ETF 近期表现"})
+        results = [
+            {
+                "engine": "opencli:duckduckgo",
+                "title": f"沪深300ETF 行情 {index}",
+                "url": f"https://example.com/510300/{index}",
+                "snippet": "近期表现摘要",
+            }
+            for index in range(1, 13)
+        ]
+        observation = ToolObservation(
+            call_id=call.id,
+            tool_name=call.name,
+            ok=True,
+            result={
+                "query": "沪深300ETF 近期表现",
+                "results": results,
+            },
+        )
+
+        refs = workspace.record_external_evidence(call, observation)
+        context = workspace.build_llm_context()
+        snapshot = workspace.build_snapshot({"summary": {}}, model="test-model")
+
+        self.assertEqual(refs[0], "web_search:call_001:1")
+        self.assertEqual(refs[-1], "web_search:call_001:12")
+        self.assertEqual(len(refs), 12)
+        self.assertEqual(observation.result["evidence_refs"], refs)
+        self.assertEqual(observation.result["results"][0]["evidence_ref"], "web_search:call_001:1")
+        self.assertEqual(observation.result["results"][11]["evidence_ref"], "web_search:call_001:12")
+        self.assertIn("web_search:call_001:1", context["evidence_index"])
+        self.assertIn("web_search:call_001:12", context["evidence_index"])
+        self.assertEqual(context["external_evidence"][0]["facts"]["url"], "https://example.com/510300/1")
+        self.assertEqual(snapshot["external_evidence"][-1]["id"], "web_search:call_001:12")
+
+    def test_loop_state_records_structured_web_search_targets(self):
+        state = AgentLoopState(messages=[])
+        call = LlmToolCall(id="call_001", name="web_search", arguments={})
+        observation = ToolObservation(
+            call_id=call.id,
+            tool_name=call.name,
+            ok=True,
+            result={
+                "queries": ["510300 沪深300ETF 近期表现", "511880 货币ETF 近期表现"],
+                "target_codes": ["510300", "511880"],
+            },
+        )
+
+        state.record_external_coverage(call, observation)
+
+        self.assertEqual(state.web_search_target_codes, ["510300", "511880"])
+        self.assertEqual(state.web_search_queries, ["510300 沪深300ETF 近期表现", "511880 货币ETF 近期表现"])
+
+    def test_loop_state_compacts_old_observation_messages(self):
+        large_observation = {
+            "call_id": "call_001",
+            "tool_name": "web_search",
+            "ok": True,
+            "result": {
+                "summary": "返回搜索结果",
+                "results": [{"title": f"结果 {index}", "snippet": "x" * 500} for index in range(20)],
+                "evidence_refs": ["web_search:call_001:1"],
+            },
+            "summary": "返回搜索结果",
+        }
+        state = AgentLoopState(messages=[
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "task"},
+            {
+                "role": "user",
+                "content": (
+                    "工具调用结果 observation。请基于该结果继续决定下一步：继续调用工具，或输出 final_report。\n"
+                    "tool_call_id: call_001\n"
+                    "tool_name: web_search\n"
+                    f"observation JSON:\n{json.dumps(large_observation, ensure_ascii=False)}"
+                ),
+            },
+            {"role": "assistant", "content": json.dumps({"type": "observation_reflection", "reasoning_summary": "ok"})},
+        ])
+
+        compacted = state.compact_messages_for_llm(max_chars=1000, keep_recent=1)
+
+        self.assertGreaterEqual(compacted, 1)
+        self.assertIn("[context_compacted]", state.messages[2]["content"])
+        self.assertNotIn("x" * 500, state.messages[2]["content"])
 
     def test_skill_tools_are_read_only_and_return_installed_skill(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -246,6 +398,134 @@ class TestAgentTools(unittest.TestCase):
         ])
         self.assertEqual(search["count"], 2)
         self.assertEqual(run.call_count, 2)
+
+    def test_web_search_targets_generate_one_query_per_holding(self):
+        config = deepcopy(self.config)
+        config["agent"]["allow_external_search_tools"] = True
+        config["search"]["providers"]["opencli"] = {"command_path": "/opt/bin/opencli"}
+        workspace = AgentWorkspace(config, holdings=self.holdings)
+        registry = build_agent_tool_registry(config)
+
+        def fake_run(cmd, **kwargs):
+            query = cmd[3]
+            return MagicMock(
+                returncode=0,
+                stdout=f'[{{"title":"{query}","url":"https://example.com","snippet":"摘要"}}]',
+                stderr="",
+            )
+
+        with patch("stock_assistant.integrations.search.subprocess.run", side_effect=fake_run) as run:
+            search = registry["web_search"].handler(
+                registry["web_search"].args_model(
+                    targets=[
+                        {"code": "510300", "name": "沪深300ETF", "topic": "近期表现 驱动因素"},
+                        {"code": "511880", "name": "货币ETF", "topic": "近期表现 风险点"},
+                    ],
+                ),
+                workspace,
+            )
+
+        self.assertTrue(search["split"])
+        self.assertEqual(search["target_codes"], ["510300", "511880"])
+        self.assertEqual(search["queries"], [
+            "510300 沪深300ETF 近期表现 驱动因素",
+            "511880 货币ETF 近期表现 风险点",
+        ])
+        self.assertEqual(run.call_count, 2)
+
+    def test_web_search_targets_normalize_dirty_model_keys_and_codes(self):
+        config = deepcopy(self.config)
+        config["agent"]["allow_external_search_tools"] = True
+        config["search"]["providers"]["opencli"] = {"command_path": "/opt/bin/opencli"}
+        workspace = AgentWorkspace(config, holdings=self.holdings)
+        registry = build_agent_tool_registry(config)
+
+        def fake_run(cmd, **kwargs):
+            query = cmd[3]
+            return MagicMock(
+                returncode=0,
+                stdout=f'[{{"title":"{query}","url":"https://example.com","snippet":"摘要"}}]',
+                stderr="",
+            )
+
+        with patch("stock_assistant.integrations.search.subprocess.run", side_effect=fake_run):
+            search = registry["web_search"].handler(
+                registry["web_search"].args_model(
+                    targets=[
+                        {"．code": "511 880", "name": "货币ETF", "topic": "近期表现"},
+                    ],
+                ),
+                workspace,
+            )
+
+        self.assertEqual(search["target_codes"], ["511880"])
+        self.assertEqual(search["queries"], ["511880 货币ETF 近期表现"])
+
+    def test_web_search_targets_executes_only_first_batch(self):
+        config = deepcopy(self.config)
+        config["agent"]["allow_external_search_tools"] = True
+        config["search"]["providers"]["opencli"] = {"command_path": "/opt/bin/opencli"}
+        holdings = [
+            Holding(code=f"51030{index}", name=f"ETF{index}", market_value=1000 - index, asset_type="etf")
+            for index in range(6)
+        ]
+        workspace = AgentWorkspace(config, holdings=holdings)
+        registry = build_agent_tool_registry(config)
+
+        def fake_run(cmd, **kwargs):
+            query = cmd[3]
+            return MagicMock(
+                returncode=0,
+                stdout=f'[{{"title":"{query}","url":"https://example.com","snippet":"摘要"}}]',
+                stderr="",
+            )
+
+        with patch("stock_assistant.integrations.search.subprocess.run", side_effect=fake_run) as run:
+            search = registry["web_search"].handler(
+                registry["web_search"].args_model(
+                    targets=[
+                        {"code": holding.code, "name": holding.name}
+                        for holding in holdings
+                    ],
+                ),
+                workspace,
+            )
+
+        self.assertEqual(search["target_batch_limit"], 4)
+        self.assertEqual(search["target_codes"], ["510300", "510301", "510302", "510303"])
+        self.assertEqual(search["omitted_target_codes"], ["510304", "510305"])
+        self.assertEqual(run.call_count, 4)
+
+    def test_web_search_query_prefers_code_matches_over_overlapping_names(self):
+        config = deepcopy(self.config)
+        config["agent"]["allow_external_search_tools"] = True
+        config["search"]["providers"]["opencli"] = {"command_path": "/opt/bin/opencli"}
+        holdings = [
+            Holding(code="512890", name="红利低波ETF", market_value=1000, asset_type="etf"),
+            Holding(code="007466", name="华泰柏瑞中证红利低波ETF联接A", market_value=500, asset_type="fund"),
+        ]
+        workspace = AgentWorkspace(config, holdings=holdings)
+        registry = build_agent_tool_registry(config)
+
+        def fake_run(cmd, **kwargs):
+            query = cmd[3]
+            return MagicMock(
+                returncode=0,
+                stdout=f'[{{"title":"{query}","url":"https://example.com","snippet":"摘要"}}]',
+                stderr="",
+            )
+
+        with patch("stock_assistant.integrations.search.subprocess.run", side_effect=fake_run) as run:
+            search = registry["web_search"].handler(
+                registry["web_search"].args_model(
+                    query="007466 华泰柏瑞中证红利低波ETF联接A 近期表现与驱动因素"
+                ),
+                workspace,
+            )
+
+        self.assertFalse(search["split"])
+        self.assertEqual(search["queries"], ["007466 华泰柏瑞中证红利低波ETF联接A 近期表现与驱动因素"])
+        self.assertEqual(run.call_count, 1)
 
     def test_web_read_marks_low_quality_login_pages(self):
         config = deepcopy(self.config)

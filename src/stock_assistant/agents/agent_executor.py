@@ -31,6 +31,21 @@ class ToolObservation(BaseModel):
     summary: str = ""
 
 
+TECHNICAL_LLM_FIELDS = (
+    "ok",
+    "latest_date",
+    "latest_close",
+    "daily_pct_change",
+    "ret5_pct",
+    "ret20_pct",
+    "rsi14",
+    "drawdown_from_120d_high_pct",
+    "profit_pct",
+    "portfolio_weight_pct",
+    "technical_observations",
+)
+
+
 def redact_sensitive(value: Any) -> Any:
     if isinstance(value, dict):
         output: dict[str, Any] = {}
@@ -87,6 +102,58 @@ def truncate_payload(value: dict[str, Any], max_chars: int) -> dict[str, Any]:
         "truncated": True,
         "preview": text[:max_chars],
         "original_chars": len(text),
+    }
+
+
+def compact_technical_for_llm(result: dict[str, Any]) -> dict[str, Any]:
+    technical = result.get("technical")
+    if not isinstance(technical, dict):
+        return result
+    compacted: dict[str, dict[str, Any]] = {}
+    for code, item in technical.items():
+        if not isinstance(item, dict):
+            continue
+        row: dict[str, Any] = {}
+        for key in TECHNICAL_LLM_FIELDS:
+            value = item.get(key)
+            if value is None or value == "":
+                continue
+            row[key] = value
+        compacted[str(code)] = row
+    return {
+        "technical": compacted,
+        "summary": result.get("summary") or f"返回 {len(compacted)} 个标的技术指标",
+        "llm_compacted": True,
+    }
+
+
+def compact_observation_payload_for_llm(observation: ToolObservation, max_chars: int = 8000) -> dict[str, Any]:
+    payload = observation.model_dump()
+    if observation.ok and observation.tool_name == "get_holding_technical":
+        payload["result"] = compact_technical_for_llm(observation.result or {})
+
+    text = json.dumps(payload, ensure_ascii=False, default=str)
+    if len(text) <= max_chars:
+        return payload
+
+    result = payload.get("result")
+    if isinstance(result, dict):
+        payload["result"] = truncate_payload(result, max(1000, max_chars - 1200))
+    text = json.dumps(payload, ensure_ascii=False, default=str)
+    if len(text) <= max_chars:
+        return payload
+    return {
+        "call_id": payload.get("call_id", ""),
+        "tool_name": payload.get("tool_name", ""),
+        "ok": payload.get("ok", False),
+        "summary": payload.get("summary", ""),
+        "error_type": payload.get("error_type", ""),
+        "message": payload.get("message", ""),
+        "result": {
+            "truncated": True,
+            "preview": text[:max_chars],
+            "original_chars": len(text),
+        },
     }
 
 
@@ -148,8 +215,13 @@ def execute_tool_call(
     )
 
 
-def tool_observation_message(call: LlmToolCall, observation: ToolObservation) -> dict[str, str]:
-    payload = observation.model_dump()
+def tool_observation_message(
+    call: LlmToolCall,
+    observation: ToolObservation,
+    *,
+    compact: bool = True,
+) -> dict[str, str]:
+    payload = compact_observation_payload_for_llm(observation) if compact else observation.model_dump()
     return {
         "role": "user",
         "content": (

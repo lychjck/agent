@@ -69,6 +69,39 @@ def regex_json_string_partial(text: str, key: str) -> str:
     return match.group(1).replace('\\"', '"').strip()
 
 
+def regex_web_search_targets(text: str, *, limit: int = 4) -> list[dict[str, str]]:
+    targets: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for match in re.finditer(
+        r'"code"\s*:\s*"(?P<code>\d{6})"(?:\s*,\s*"name"\s*:\s*"(?P<name>(?:\\.|[^"\\])*)")?',
+        text,
+        flags=re.DOTALL,
+    ):
+        code = match.group("code")
+        if code in seen:
+            continue
+        seen.add(code)
+        name = match.group("name") or ""
+        try:
+            name = json.loads(f'"{name}"') if name else ""
+        except json.JSONDecodeError:
+            name = name.replace('\\"', '"').strip()
+        targets.append({"code": code, "name": name})
+        if len(targets) >= limit:
+            return targets
+
+    summary = regex_json_string_partial(text, "reasoning_summary")
+    candidate_text = summary or text
+    for code in re.findall(r"\b\d{6}\b", candidate_text):
+        if code in seen:
+            continue
+        seen.add(code)
+        targets.append({"code": code, "name": ""})
+        if len(targets) >= limit:
+            break
+    return targets
+
+
 def salvage_tool_calls(text: str, reasoning_summary: str) -> dict[str, Any] | None:
     calls: list[dict[str, Any]] = []
     for match in re.finditer(r'"name"\s*:\s*"([^"]+)"', text):
@@ -83,6 +116,9 @@ def salvage_tool_calls(text: str, reasoning_summary: str) -> dict[str, Any] | No
             query = regex_json_string_partial(tail, "query")
             if query:
                 arguments["query"] = query
+            targets = regex_web_search_targets(tail)
+            if targets:
+                arguments["targets"] = targets
         elif name == "opencli_command":
             site = regex_json_string_partial(tail, "site")
             command = regex_json_string_partial(tail, "command")
@@ -97,6 +133,14 @@ def salvage_tool_calls(text: str, reasoning_summary: str) -> dict[str, Any] | No
                 "id": f"call_salvage_{len(calls) + 1:03d}",
                 "name": name,
                 "arguments": arguments,
+            })
+    if not calls and regex_json_string(text, "type") == "tool_calls":
+        targets = regex_web_search_targets(text)
+        if targets:
+            calls.append({
+                "id": "call_salvage_001",
+                "name": "web_search",
+                "arguments": {"targets": targets},
             })
     if not calls:
         return None
@@ -360,9 +404,18 @@ def parse_llm_tool_step(text: str) -> LlmToolStep:
                 raw_text=text,
             )
         if step_type == "tool_calls":
+            try:
+                normalized_calls = normalize_tool_calls(payload)
+            except ValueError as exc:
+                salvaged_payload = salvage_tool_calls(text, reasoning_summary)
+                if not salvaged_payload:
+                    raise exc
+                normalized_calls = normalize_tool_calls(salvaged_payload)
+                thinking_trace = extract_thinking_trace(salvaged_payload)
+                reasoning_summary = extract_reasoning_summary(salvaged_payload)
             return LlmToolStep(
                 type="tool_calls",
-                tool_calls=[LlmToolCall.model_validate(item) for item in normalize_tool_calls(payload)],
+                tool_calls=[LlmToolCall.model_validate(item) for item in normalized_calls],
                 thinking_trace=thinking_trace,
                 missing_capabilities=missing_capabilities,
                 reasoning_summary=reasoning_summary,

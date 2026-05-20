@@ -510,11 +510,77 @@ def filter_evidence_refs(refs: list[str], evidence_index: dict[str, Any]) -> lis
     seen: set[str] = set()
     valid: list[str] = []
     for ref in refs:
-        key = str(ref)
+        key = normalize_evidence_ref(str(ref), evidence_index)
         if key in evidence_index and key not in seen:
             seen.add(key)
             valid.append(key)
     return valid
+
+
+def compact_ref_code(value: str) -> str:
+    return "".join(ch for ch in str(value or "") if ch.isalnum())
+
+
+def normalize_evidence_ref(ref: str, evidence_index: dict[str, Any]) -> str:
+    text = str(ref or "").strip()
+    text = text.replace("：", ":").replace("．", ".")
+    text = text.replace(" ", "").replace("\t", "")
+    if text in evidence_index:
+        return text
+    if text.startswith("get_holding_technical:"):
+        code = compact_ref_code(text.split(":", 1)[1])
+        candidate = f"holding:{code}:technical"
+        if candidate in evidence_index:
+            return candidate
+    if text.startswith("get_classification:"):
+        code = compact_ref_code(text.split(":", 1)[1])
+        candidate = f"holding:{code}:classification"
+        if candidate in evidence_index:
+            return candidate
+    if text.startswith("holding:"):
+        parts = text.split(":")
+        if len(parts) >= 3:
+            code = compact_ref_code(parts[1])
+            kind = parts[2]
+            candidate = f"holding:{code}:{kind}"
+            if candidate in evidence_index:
+                return candidate
+    return text
+
+
+def filter_holding_evidence_refs(
+    refs: list[str],
+    evidence_index: dict[str, Any],
+    target_code: str,
+) -> list[str]:
+    normalized_refs = [
+        normalize_holding_scoped_evidence_ref(str(ref), evidence_index, target_code)
+        for ref in refs
+    ]
+    filtered = filter_evidence_refs(normalized_refs, evidence_index)
+    if not target_code:
+        return filtered
+    own_prefix = f"holding:{target_code}:"
+    return [
+        ref for ref in filtered
+        if not ref.startswith("holding:") or ref.startswith(own_prefix)
+    ]
+
+
+def normalize_holding_scoped_evidence_ref(ref: str, evidence_index: dict[str, Any], target_code: str) -> str:
+    normalized = normalize_evidence_ref(ref, evidence_index)
+    if normalized in evidence_index or not target_code:
+        return normalized
+    text = str(ref or "").strip().replace("：", ":")
+    if text.startswith("get_holding_technical:"):
+        candidate = f"holding:{target_code}:technical"
+        if candidate in evidence_index:
+            return candidate
+    if text.startswith("get_classification:"):
+        candidate = f"holding:{target_code}:classification"
+        if candidate in evidence_index:
+            return candidate
+    return normalized
 
 
 def normalize_report_payload_aliases(payload: dict[str, Any]) -> dict[str, Any]:
@@ -743,7 +809,11 @@ def validate_agent_report(
         if not item.get("title"):
             item["title"] = "基于现有数据观察"
         item = normalize_holding_action_copy(item, holding_by_code.get(code))
-        item["evidence_refs"] = filter_evidence_refs(item.get("evidence_refs", []), evidence_index)
+        item["evidence_refs"] = filter_holding_evidence_refs(
+            item.get("evidence_refs", []),
+            evidence_index,
+            code,
+        )
         if code:
             seen_holding_codes.add(code)
         valid_holding_analysis.append(item)

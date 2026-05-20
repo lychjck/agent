@@ -221,6 +221,27 @@ class TestLlmTools(unittest.TestCase):
         self.assertEqual(step.tool_calls[0].arguments["url"], "https://zhuanlan.zhihu.com/p/197386827")
         self.assertEqual(step.thinking_trace["recovery"], "salvaged_malformed_tool_calls")
 
+    def test_salvages_malformed_tool_calls_with_web_search_targets_from_summary(self):
+        step = parse_llm_tool_step(
+            '---\n```json\n{\n'
+            '  "type": "tool_calls",\n'
+            '  "reasoning_summary": "本轮任务是针对 021415, 000259, 019500, 520500 这四个核心标的进行结构化搜索",\n'
+            '  "thinking_�trace"'
+        )
+
+        self.assertEqual(step.type, "tool_calls")
+        self.assertEqual(step.tool_calls[0].name, "web_search")
+        self.assertEqual(
+            step.tool_calls[0].arguments["targets"],
+            [
+                {"code": "021415", "name": ""},
+                {"code": "000259", "name": ""},
+                {"code": "019500", "name": ""},
+                {"code": "520500", "name": ""},
+            ],
+        )
+        self.assertEqual(step.thinking_trace["recovery"], "salvaged_malformed_tool_calls")
+
     def test_salvages_malformed_tool_calls_as_reflection_when_arguments_missing(self):
         step = parse_llm_tool_step(
             '<|channel>thought\n<channel|>{"type":"tool_calls","reasoning_summary":"继续调用工具","tool_calls":['

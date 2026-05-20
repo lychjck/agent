@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Callable
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from stock_assistant.agents.agent_llm import classification_record, technical_record
 from stock_assistant.agents.agent_workspace import AgentWorkspace
@@ -32,6 +32,8 @@ ALLOWED_HOLDING_FIELDS = {
     "hold_profit",
     "day_profit",
 }
+
+WEB_SEARCH_TARGET_BATCH_LIMIT = 4
 
 HOLDING_FIELD_ALIASES = {
     "weight": "weight_pct",
@@ -109,8 +111,42 @@ class WebFetchArgs(BaseModel):
     max_chars: int = Field(default=8000, ge=500, le=20000)
 
 
+class WebSearchTarget(BaseModel):
+    code: str = Field(min_length=1, max_length=20)
+    name: str = Field(default="", max_length=120)
+    topic: str | None = Field(default=None, max_length=120)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_keys(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        normalized: dict[str, Any] = {}
+        for key, item in value.items():
+            clean_key = re.sub(r"[\s．。.:：]+", "", str(key)).lower()
+            if clean_key == "code":
+                normalized["code"] = item
+            elif clean_key == "name":
+                normalized["name"] = item
+            elif clean_key == "topic":
+                normalized["topic"] = item
+            else:
+                normalized[str(key)] = item
+        return normalized
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def normalize_code(cls, value: Any) -> str:
+        return re.sub(r"\s+", "", str(value or "")).strip()
+
+
 class WebSearchArgs(BaseModel):
-    query: str = Field(min_length=1, max_length=500)
+    query: str = Field(default="", max_length=500)
+    targets: list[WebSearchTarget] = Field(
+        default_factory=list,
+        max_length=12,
+        description="结构化单标的搜索。每个 target 只需要 code/name，topic 可省略；单次最多执行前 4 个 target。",
+    )
     engines: list[str] = Field(
         default_factory=list, 
         max_length=8,
@@ -212,13 +248,18 @@ def split_multi_holding_query(query: str, workspace: AgentWorkspace) -> list[str
     if not text:
         return []
     matches: list[tuple[str, str]] = []
+    code_matches: list[tuple[str, str]] = []
+    name_matches: list[tuple[str, str]] = []
     for holding in workspace.ensure_holdings():
         code = str(holding.code or "").strip()
         name = str(holding.name or "").strip()
         if not code:
             continue
-        if code in text or (name and name in text):
-            matches.append((code, name))
+        if code in text:
+            code_matches.append((code, name))
+        elif name and name in text:
+            name_matches.append((code, name))
+    matches = code_matches or name_matches
     unique: list[tuple[str, str]] = []
     seen: set[str] = set()
     for code, name in matches:
@@ -230,6 +271,43 @@ def split_multi_holding_query(query: str, workspace: AgentWorkspace) -> list[str
         return [text]
     suffix = holding_query_suffix(text)
     return [f"{code} {name} {suffix}".strip() for code, name in unique]
+
+
+def target_search_queries(
+    targets: list[WebSearchTarget],
+    workspace: AgentWorkspace,
+    *,
+    limit: int = WEB_SEARCH_TARGET_BATCH_LIMIT,
+) -> tuple[list[dict[str, str]], list[str]]:
+    if not targets:
+        return [], []
+    holdings_by_code = {
+        str(holding.code): holding
+        for holding in workspace.ensure_holdings()
+        if holding.code
+    }
+    queries: list[dict[str, str]] = []
+    omitted: list[str] = []
+    seen: set[str] = set()
+    for target in targets:
+        code = target.code.strip()
+        if code not in holdings_by_code:
+            raise ValueError(f"web_search target 不在当前持仓中: {code}")
+        if code in seen:
+            continue
+        seen.add(code)
+        if len(queries) >= limit:
+            omitted.append(code)
+            continue
+        holding = holdings_by_code[code]
+        name = target.name.strip() or str(holding.name or "")
+        topic = (target.topic or "").strip() or "近期表现 驱动因素 风险点"
+        queries.append({
+            "code": code,
+            "name": name,
+            "query": f"{code} {name} {topic}".strip(),
+        })
+    return queries, omitted
 
 
 def holding_tool_record(holding: Any, total_value: float | None, fields: list[str]) -> dict[str, Any]:
@@ -452,7 +530,13 @@ def handle_web_search(args: BaseModel, workspace: AgentWorkspace) -> dict[str, A
     from stock_assistant.integrations.search import build_search_provider
 
     provider = build_search_provider(opencli_search_config)
-    queries = split_multi_holding_query(typed.query, workspace)
+    target_queries, omitted_target_codes = target_search_queries(typed.targets, workspace)
+    if target_queries:
+        queries = [item["query"] for item in target_queries]
+    else:
+        queries = split_multi_holding_query(typed.query, workspace)
+    if not queries:
+        raise ValueError("web_search 需要提供 query 或 targets")
     max_workers = min(6, max(1, len(queries)))
     results_by_query: list[dict[str, Any]] = []
     if len(queries) == 1:
@@ -478,6 +562,10 @@ def handle_web_search(args: BaseModel, workspace: AgentWorkspace) -> dict[str, A
     return {
         "query": typed.query,
         "queries": queries,
+        "target_codes": [item["code"] for item in target_queries],
+        "targets": target_queries,
+        "target_batch_limit": WEB_SEARCH_TARGET_BATCH_LIMIT if target_queries else None,
+        "omitted_target_codes": omitted_target_codes,
         "split": len(queries) > 1,
         "engines": ["opencli"],
         "count": len(results),
@@ -499,9 +587,9 @@ def handle_web_search(args: BaseModel, workspace: AgentWorkspace) -> dict[str, A
             for item in results
         ],
         "summary": (
-            f"opencli 搜索 {typed.query}，拆分为 {len(queries)} 个查询并返回 {len(results)} 条结果"
+            f"opencli 搜索 {typed.query or 'targets'}，拆分为 {len(queries)} 个查询并返回 {len(results)} 条结果"
             if len(queries) > 1
-            else f"opencli 搜索 {typed.query}，返回 {len(results)} 条结果"
+            else f"opencli 搜索 {typed.query or queries[0]}，返回 {len(results)} 条结果"
         ),
     }
 
@@ -774,6 +862,9 @@ def build_agent_tool_registry(config: dict[str, Any]) -> dict[str, AgentToolSpec
                 name="web_search",
                 description=(
                     "通过 opencli 执行网页搜索，返回结构化结果 title/url/snippet。"
+                    "单标的持仓调研必须优先使用 targets=[{code,name}]，topic 可省略，后端会为每个 target 生成独立 query；"
+                    f"单次最多执行前 {WEB_SEARCH_TARGET_BATCH_LIMIT} 个 target，缺口较多时分批调用；"
+                    "query 只用于市场/主题级通用检索，不能把多个持仓标的塞在同一个 query。"
                     "优先用它搜索，再用 web_read 打开具体结果页。"
                 ),
                 args_model=WebSearchArgs,

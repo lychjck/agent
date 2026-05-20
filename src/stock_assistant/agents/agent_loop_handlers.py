@@ -33,6 +33,7 @@ def run_missing_technical_gate(
     max_calls: int,
     missing_codes: list[str],
     gate_status: str,
+    compact_tool_observations: bool = True,
 ) -> tuple[list[dict[str, Any]], bool]:
     events = [
         tool_agent_event(
@@ -96,10 +97,97 @@ def run_missing_technical_gate(
                 auto=True,
             )
         )
-        state.messages.append(tool_observation_message(call, observation))
+        state.messages.append(tool_observation_message(call, observation, compact=compact_tool_observations))
     state.require_reflection()
     state.messages.append({"role": "user", "content": build_coverage_prompt(missing_codes)})
     state.messages.append({"role": "user", "content": build_reflection_prompt()})
+    return events, True
+
+
+def select_auto_web_read_url(workspace: AgentWorkspace) -> str:
+    for item in workspace.external_evidence:
+        if not isinstance(item, dict) or item.get("type") != "web_search_result":
+            continue
+        facts = item.get("facts")
+        if not isinstance(facts, dict):
+            continue
+        url = str(facts.get("url") or "").strip()
+        if url.startswith(("http://", "https://")):
+            return url
+    return ""
+
+
+def run_auto_web_read_gate(
+    *,
+    run_id: str,
+    turn: int,
+    trace: AgentTraceWriter,
+    registry: dict[str, AgentToolSpec],
+    workspace: AgentWorkspace,
+    state: AgentLoopState,
+    max_calls: int,
+    compact_tool_observations: bool = True,
+) -> tuple[list[dict[str, Any]], bool]:
+    if "web_read" not in registry:
+        return [], True
+    url = select_auto_web_read_url(workspace)
+    if not url:
+        return [], True
+    state.tool_call_count += 1
+    if state.tool_call_count > max_calls:
+        message = f"达到 max_tool_calls={max_calls}，Agent 未完成"
+        trace.write("error", {"turn": turn, "error": message})
+        agent_log(run_id, message, turn=turn, level="ERROR")
+        return [tool_agent_event("error", message, run_id=run_id, error=message)], False
+
+    call = LlmToolCall(
+        id=f"auto_web_read_{turn:02d}",
+        name="web_read",
+        arguments={"url": url},
+    )
+    trace.write("tool_call", {"turn": turn, "call": call.model_dump(), "reason": "external_research_gate"})
+    events = [
+        tool_agent_event(
+            "tool_call",
+            "外部研究缺少来源页阅读，后端自动打开一个已搜索来源",
+            run_id=run_id,
+            turn=turn,
+            tool=call.name,
+            arguments=call.arguments,
+            auto=True,
+        )
+    ]
+    started = time.monotonic()
+    observation = execute_tool_call(call, registry, workspace)
+    elapsed = time.monotonic() - started
+    workspace.record_external_evidence(call, observation)
+    trace.write("tool_observation", {"turn": turn, "observation": observation.model_dump()})
+    agent_log(
+        run_id,
+        (
+            f"auto_web_read_observation ok={observation.ok} elapsed={elapsed:.2f}s "
+            f"summary={observation.summary or observation.message}"
+        ),
+        turn=turn,
+        level="INFO" if observation.ok else "WARN",
+    )
+    events.append(
+        tool_agent_event(
+            "tool_observation",
+            observation.summary or observation.message,
+            run_id=run_id,
+            turn=turn,
+            tool=call.name,
+            ok=observation.ok,
+            summary=observation.summary,
+            error_type=observation.error_type,
+            message=observation.message,
+            observation=observation.model_dump(),
+            auto=True,
+        )
+    )
+    state.record_external_coverage(call, observation)
+    state.messages.append(tool_observation_message(call, observation, compact=compact_tool_observations))
     return events, True
 
 
@@ -113,6 +201,7 @@ def run_tool_calls(
     state: AgentLoopState,
     max_calls: int,
     calls: list[LlmToolCall],
+    compact_tool_observations: bool = True,
 ) -> tuple[list[dict[str, Any]], bool]:
     events: list[dict[str, Any]] = []
     executable_calls: list[LlmToolCall] = []
@@ -147,6 +236,7 @@ def run_tool_calls(
         agent_log(run_id, f"parallel_tool_batch count={len(executable_calls)}", turn=turn)
 
     for call, observation, elapsed in execute_call_batch(executable_calls, registry, workspace):
+        workspace.record_external_evidence(call, observation)
         trace.write("tool_observation", {"turn": turn, "observation": observation.model_dump()})
         observation_log_level = "INFO" if observation.ok else "WARN"
         agent_log(
@@ -174,7 +264,7 @@ def run_tool_calls(
             )
         )
         state.record_external_coverage(call, observation)
-        state.messages.append(tool_observation_message(call, observation))
+        state.messages.append(tool_observation_message(call, observation, compact=compact_tool_observations))
 
     state.require_reflection()
     state.messages.append({"role": "user", "content": build_reflection_prompt()})

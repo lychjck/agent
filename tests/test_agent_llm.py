@@ -359,6 +359,99 @@ class TestAgentLlm(unittest.TestCase):
         self.assertEqual(report["holding_analysis"][0]["action_type"], "watch")
         self.assertEqual(report["action_items"][0]["type"], "watch")
 
+    def test_parse_agent_report_drops_cross_holding_evidence_refs(self):
+        context = self.context()
+        context["evidence_index"]["holding:512690:technical"] = {
+            "type": "technical",
+            "code": "512690",
+            "facts": {},
+        }
+        payload = {
+            "summary": {"brief": "组合需要继续观察。"},
+            "diagnosis": [],
+            "holding_analysis": [
+                {
+                    "target_code": "510300",
+                    "target_name": "沪深300ETF",
+                    "action_type": "watch",
+                    "title": "等待趋势确认",
+                    "reason": "引用中混入了其他标的的技术指标。",
+                    "evidence_refs": ["holding:512690:technical", "holding:510300:technical"],
+                }
+            ],
+        }
+
+        report = parse_agent_report(
+            json.dumps(payload, ensure_ascii=False),
+            [],
+            context["evidence_index"],
+            self.config,
+            holdings=context["holdings"],
+        )
+
+        self.assertEqual(report["holding_analysis"][0]["evidence_refs"], ["holding:510300:technical"])
+
+    def test_parse_agent_report_normalizes_tool_style_evidence_refs(self):
+        context = self.context()
+        payload = {
+            "summary": {"brief": "组合需要继续观察。"},
+            "diagnosis": [],
+            "holding_analysis": [
+                {
+                    "target_code": "510300",
+                    "target_name": "沪深300ETF",
+                    "action_type": "watch",
+                    "title": "等待趋势确认",
+                    "reason": "模型使用了工具调用式引用。",
+                    "evidence_refs": ["get_holding_technical:510300", "holding:510 300:technical"],
+                }
+            ],
+        }
+
+        report = parse_agent_report(
+            json.dumps(payload, ensure_ascii=False),
+            [],
+            context["evidence_index"],
+            self.config,
+            holdings=context["holdings"],
+        )
+
+        self.assertEqual(report["holding_analysis"][0]["evidence_refs"], ["holding:510300:technical"])
+
+    def test_parse_agent_report_maps_malformed_scoped_technical_ref_to_target(self):
+        context = self.context()
+        context["holdings"][0]["code"] = "516020"
+        context["holdings"][0]["name"] = "化工ETF"
+        context["evidence_index"]["holding:516020:technical"] = {
+            "type": "technical",
+            "code": "516020",
+            "facts": {},
+        }
+        payload = {
+            "summary": {"brief": "组合需要继续观察。"},
+            "diagnosis": [],
+            "holding_analysis": [
+                {
+                    "target_code": "516020",
+                    "target_name": "化工ETF",
+                    "action_type": "watch",
+                    "title": "等待趋势确认",
+                    "reason": "模型把当前标的代码写脏了。",
+                    "evidence_refs": ["get_holding_technical:51602 20"],
+                }
+            ],
+        }
+
+        report = parse_agent_report(
+            json.dumps(payload, ensure_ascii=False),
+            [],
+            context["evidence_index"],
+            self.config,
+            holdings=context["holdings"],
+        )
+
+        self.assertEqual(report["holding_analysis"][0]["evidence_refs"], ["holding:516020:technical"])
+
     def test_parse_agent_report_removes_unknown_action_and_bad_evidence(self):
         context = self.context()
         payload = {

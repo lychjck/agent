@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { RefreshCw, TrendingUp, TrendingDown, Activity, DollarSign, Wallet, ShieldAlert, Cpu, Landmark, LineChart, PieChart as PieChartIcon, RotateCcw, Box, ArrowDownUp, Database, Layers, AlertTriangle, CheckCircle2, ChevronRight, FileText, Wrench, MessageSquare, Braces } from 'lucide-react';
+import { RefreshCw, TrendingUp, TrendingDown, Activity, DollarSign, Wallet, ShieldAlert, Cpu, Landmark, LineChart, PieChart as PieChartIcon, RotateCcw, Box, ArrowDownUp, Database, Layers, AlertTriangle, CheckCircle2, ChevronRight, FileText, Wrench, MessageSquare, Braces, Square } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, AreaChart, Area, XAxis, YAxis, CartesianGrid } from 'recharts';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
@@ -19,6 +19,13 @@ type AgentTraceEntry = {
 };
 
 type AgentPayload = Record<string, unknown>;
+
+type AgentModelOption = {
+  id: string;
+  name: string;
+  provider: string;
+  default?: boolean;
+};
 
 const formatMoney = (value: any) => `¥ ${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const formatPct = (value: any) => `${Number(value || 0).toFixed(2)}%`;
@@ -177,6 +184,7 @@ const traceTitle = (payload: AgentPayload) => {
   if (step === 'final_report') return '生成最终报告';
   if (step === 'save_snapshot') return '保存快照';
   if (step === 'done') return '流程完成';
+  if (step === 'cancelled') return '已终止分析';
   if (step === 'error') return '执行出错';
   return textValue(payload.status) || step || 'Agent 事件';
 };
@@ -197,6 +205,7 @@ const traceTone = (payload: AgentPayload): AgentTraceEntry['tone'] => {
   if (payload.step === 'tool_observation') return 'emerald';
   if (payload.step === 'research_plan') return 'amber';
   if (payload.step === 'observation_reflection') return 'amber';
+  if (payload.step === 'cancelled') return 'amber';
   if (payload.step === 'final_report' || payload.step === 'done') return 'indigo';
   if (payload.step === 'save_snapshot') return 'amber';
   return 'slate';
@@ -235,18 +244,9 @@ export default function App() {
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [currentStep, setCurrentStep] = useState(0);
   const [agentRunStatus, setAgentRunStatus] = useState('');
-  const [selectedModel, setSelectedModel] = useState('deepseek-v4-pro');
+  const [selectedModel, setSelectedModel] = useState('');
+  const [agentModels, setAgentModels] = useState<AgentModelOption[]>([]);
   const [technicalResults, setTechnicalResults] = useState<any[] | null>(null);
-  
-  const MODELS = [
-    { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', provider: 'EasyRouter' },
-    { id: 'google/gemma-4-26b-a4b', name: 'Gemma 4 26B A4B (本地)', provider: 'Local' },
-    { id: 'inclusionAI/Ling-2.6-1T', name: 'Ling-2.6-1T (推荐)', provider: 'ModelScope' },
-    { id: 'ZhipuAI/GLM-5.1', name: 'GLM-5.1', provider: 'ModelScope' },
-    { id: 'moonshotai/Kimi-K2.5', name: 'Kimi-K2.5', provider: 'ModelScope' },
-    { id: 'deepseek-ai/DeepSeek-V3', name: 'DeepSeek V3', provider: 'ModelScope' },
-    { id: 'deepseek-ai/DeepSeek-V4-Pro', name: 'DeepSeek V4 Pro', provider: 'ModelScope' },
-  ];
   const [hasError, setHasError] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'profile' | 'analysis'>('overview');
   
@@ -261,8 +261,10 @@ export default function App() {
   const [klineLoading, setKlineLoading] = useState(false);
   const runPollTimerRef = useRef<number | null>(null);
   const runEventIndexRef = useRef(0);
+  const stopRequestedRef = useRef(false);
 
   useEffect(() => {
+    fetchAgentModels();
     fetchHoldings();
     fetchProfile(false);
     recoverAgentRun();
@@ -292,6 +294,21 @@ export default function App() {
       console.error(err);
     }
     setLoading(false);
+  };
+
+  const fetchAgentModels = async () => {
+    try {
+      const res = await fetch(`/api/agent/models?_t=${Date.now()}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const payload = await res.json();
+      const models = Array.isArray(payload.models) ? payload.models : [];
+      setAgentModels(models);
+      const defaultModel = textValue(payload.default_model);
+      const firstModel = models.length > 0 ? textValue(models[0].id) : '';
+      setSelectedModel(prev => prev || defaultModel || firstModel);
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   const fetchProfile = async (refreshClassification: boolean) => {
@@ -383,8 +400,14 @@ export default function App() {
 
   const pollAgentRun = async (runId: string) => {
     stopAgentPolling();
+    if (window.localStorage.getItem(ACTIVE_AGENT_RUN_KEY) !== runId || stopRequestedRef.current) {
+      return;
+    }
     try {
       const res = await fetch(`/api/agent/run/${encodeURIComponent(runId)}?after=${runEventIndexRef.current}&_t=${Date.now()}`);
+      if (window.localStorage.getItem(ACTIVE_AGENT_RUN_KEY) !== runId || stopRequestedRef.current) {
+        return;
+      }
       if (res.status === 404) {
         window.localStorage.removeItem(ACTIVE_AGENT_RUN_KEY);
         setAnalyzing(false);
@@ -417,11 +440,20 @@ export default function App() {
         finishRecoveredRun(isRecord(payload.snapshot) ? payload.snapshot : null);
         return;
       }
+      if (status === 'cancelled') {
+        finishRecoveredRun(null);
+        setAgentRunStatus('cancelled');
+        setHasError(false);
+        return;
+      }
       finishRecoveredRun(null);
       if (payload.error) {
         setHasError(true);
       }
     } catch (err: any) {
+      if (window.localStorage.getItem(ACTIVE_AGENT_RUN_KEY) !== runId || stopRequestedRef.current) {
+        return;
+      }
       console.error(err);
       const entry = buildAgentTraceEntry({ step: 'error', error: err.message, status: '恢复 AI 分析状态失败' });
       setAnalysisTrace(prev => [...prev, entry]);
@@ -449,6 +481,7 @@ export default function App() {
       await fetchLatestAgentSnapshot();
       return;
     }
+    stopRequestedRef.current = false;
     setActiveTab('analysis');
     setAnalyzing(true);
     setHasError(false);
@@ -458,12 +491,27 @@ export default function App() {
     await pollAgentRun(runId);
   };
 
-  const handleAnalyze = async (resumeData: any[] | null = null) => {
+  const discardActiveAgentRun = async () => {
+    const activeRunId = window.localStorage.getItem(ACTIVE_AGENT_RUN_KEY);
+    window.localStorage.removeItem(ACTIVE_AGENT_RUN_KEY);
+    if (!activeRunId) return;
+    try {
+      await fetch(`/api/agent/run/${encodeURIComponent(activeRunId)}/cancel`, { method: 'POST' });
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleAnalyze = async (resumeData: any[] | null = null, options: { forceNew?: boolean } = {}) => {
+    stopRequestedRef.current = false;
     setActiveTab('analysis');
     setAnalyzing(true);
     setHasError(false);
     const activeRunId = window.localStorage.getItem(ACTIVE_AGENT_RUN_KEY);
-    if (activeRunId && agentRunStatus === 'paused') {
+    if (options.forceNew) {
+      await discardActiveAgentRun();
+      setAgentRunStatus('');
+    } else if (activeRunId && agentRunStatus === 'paused') {
       try {
         const response = await fetch(`/api/agent/run/${encodeURIComponent(activeRunId)}/resume`, { method: 'POST' });
         if (!response.ok) {
@@ -481,7 +529,7 @@ export default function App() {
       }
       return;
     }
-    if (!resumeData) {
+    if (!resumeData || options.forceNew) {
       setAiData(null);
       setAnalysisTrace([]);
       setSelectedTraceId(null);
@@ -498,7 +546,7 @@ export default function App() {
           mode: 'tool_agent',
           goal: '分析当前持仓，给出组合风险、每个 ETF 的建议和需要确认的问题',
           cached_results: resumeData,
-          model: selectedModel
+          model: selectedModel || undefined
         })
       });
       if (!response.ok) {
@@ -519,6 +567,29 @@ export default function App() {
       setSelectedTraceId(entry.id);
       setHasError(true);
       setAnalyzing(false);
+    }
+  };
+
+  const handleStopAnalyze = async () => {
+    const runId = window.localStorage.getItem(ACTIVE_AGENT_RUN_KEY);
+    stopRequestedRef.current = true;
+    stopAgentPolling();
+    window.localStorage.removeItem(ACTIVE_AGENT_RUN_KEY);
+    setAnalyzing(false);
+    setAgentRunStatus('cancelled');
+    setHasError(false);
+    const entry = buildAgentTraceEntry({
+      step: 'cancelled',
+      status: '用户已终止 AI 分析',
+      run_id: runId || '',
+    });
+    setAnalysisTrace(prev => [...prev, entry]);
+    setSelectedTraceId(entry.id);
+    if (!runId) return;
+    try {
+      await fetch(`/api/agent/run/${encodeURIComponent(runId)}/cancel`, { method: 'POST' });
+    } catch (err) {
+      console.error(err);
     }
   };
 
@@ -570,23 +641,51 @@ export default function App() {
                 disabled={analyzing}
                 className="bg-transparent text-sm font-semibold text-slate-200 outline-none cursor-pointer pr-4"
               >
-                {MODELS.map(m => (
+                {agentModels.map(m => (
                   <option key={m.id} value={m.id} className="bg-[#0B1120] text-slate-200">
-                    {m.name}
+                    {m.name}{m.provider ? ` · ${m.provider}` : ''}
                   </option>
                 ))}
+                {agentModels.length === 0 && (
+                  <option value="" className="bg-[#0B1120] text-slate-200">
+                    加载模型配置中...
+                  </option>
+                )}
               </select>
             </div>
 
-            <button 
-              onClick={() => handleAnalyze(null)}
-              disabled={analyzing || loading}
-              className="group relative flex items-center justify-center gap-3 bg-gradient-to-b from-violet-500 to-violet-600 hover:from-violet-400 hover:to-violet-500 disabled:opacity-50 disabled:cursor-not-allowed px-8 py-3.5 rounded-[1.25rem] font-bold transition-all shadow-[0_0_40px_-10px_rgba(139,92,246,0.4)] hover:shadow-[0_0_60px_-15px_rgba(139,92,246,0.6)] hover:-translate-y-0.5 overflow-hidden border border-violet-400/30"
-            >
-              <div className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300 ease-out"></div>
-              {analyzing ? <RefreshCw className="animate-spin w-5 h-5 relative z-10" /> : <Cpu className="w-5 h-5 relative z-10" />}
-              <span className="relative z-10">{analyzing ? '诊断模型运行中...' : agentRunStatus === 'paused' ? '从中断处继续' : '一键启动 AI 诊断'}</span>
-            </button>
+            <div className="flex flex-col sm:flex-row gap-3">
+              <button
+                onClick={() => handleAnalyze(null)}
+                disabled={analyzing || loading}
+                className="group relative flex items-center justify-center gap-3 bg-gradient-to-b from-violet-500 to-violet-600 hover:from-violet-400 hover:to-violet-500 disabled:opacity-50 disabled:cursor-not-allowed px-8 py-3.5 rounded-[1.25rem] font-bold transition-all shadow-[0_0_40px_-10px_rgba(139,92,246,0.4)] hover:shadow-[0_0_60px_-15px_rgba(139,92,246,0.6)] hover:-translate-y-0.5 overflow-hidden border border-violet-400/30"
+              >
+                <div className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300 ease-out"></div>
+                {analyzing ? <RefreshCw className="animate-spin w-5 h-5 relative z-10" /> : <Cpu className="w-5 h-5 relative z-10" />}
+                <span className="relative z-10">{analyzing ? '诊断模型运行中...' : agentRunStatus === 'paused' ? '从中断处继续' : '一键启动 AI 诊断'}</span>
+              </button>
+              {!analyzing && agentRunStatus === 'paused' && (
+                <button
+                  onClick={() => handleAnalyze(null, { forceNew: true })}
+                  disabled={loading}
+                  className="flex items-center justify-center gap-2 rounded-[1.25rem] border border-slate-600/70 bg-slate-900/70 px-5 py-3.5 text-sm font-bold text-slate-200 transition-all hover:-translate-y-0.5 hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                  title="丢弃中断任务并重新开始"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  新开分析
+                </button>
+              )}
+              {analyzing && (
+                <button
+                  onClick={handleStopAnalyze}
+                  className="flex items-center justify-center gap-2 rounded-[1.25rem] border border-red-400/30 bg-red-500/10 px-5 py-3.5 text-sm font-bold text-red-200 transition-all hover:-translate-y-0.5 hover:bg-red-500/20 hover:text-red-100"
+                  title="终止当前 AI 分析"
+                >
+                  <Square className="w-4 h-4 fill-current" />
+                  停止
+                </button>
+              )}
+            </div>
           </div>
         </header>
 
@@ -653,10 +752,22 @@ export default function App() {
                   </p>
                 </div>
               </div>
-              <div className="flex gap-1">
-                {[1, 2, 3, 4].map(step => (
-                  <div key={step} className={`w-8 h-1.5 rounded-full transition-colors duration-500 ${currentStep >= step ? 'bg-indigo-500' : 'bg-slate-800'}`}></div>
-                ))}
+              <div className="flex items-center gap-3">
+                <div className="flex gap-1">
+                  {[1, 2, 3, 4].map(step => (
+                    <div key={step} className={`w-8 h-1.5 rounded-full transition-colors duration-500 ${currentStep >= step ? 'bg-indigo-500' : 'bg-slate-800'}`}></div>
+                  ))}
+                </div>
+                {analyzing && (
+                  <button
+                    onClick={handleStopAnalyze}
+                    className="inline-flex items-center gap-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs font-bold text-red-200 transition-colors hover:bg-red-500/20"
+                    title="终止当前 AI 分析"
+                  >
+                    <Square className="w-3.5 h-3.5 fill-current" />
+                    停止分析
+                  </button>
+                )}
               </div>
             </div>
 
@@ -716,14 +827,14 @@ export default function App() {
               <div className="mt-6 flex flex-col sm:flex-row gap-3 animate-in slide-in-from-bottom-2 duration-500">
                 {technicalResults && (
                   <button 
-                    onClick={() => handleAnalyze(technicalResults)}
+                    onClick={() => handleAnalyze(technicalResults, { forceNew: true })}
                     className="flex-1 flex items-center justify-center gap-2 py-3 bg-indigo-500 hover:bg-indigo-400 text-white rounded-xl font-bold transition-all shadow-lg shadow-indigo-500/20"
                   >
                     <RefreshCw className="w-4 h-4" /> 仅重试 AI 诊断 (跳过 K 线)
                   </button>
                 )}
                 <button 
-                  onClick={() => handleAnalyze(null)}
+                  onClick={() => handleAnalyze(null, { forceNew: true })}
                   className="flex-1 flex items-center justify-center gap-2 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl font-bold transition-all border border-slate-700"
                 >
                   <RotateCcw className="w-4 h-4" /> 全量重新诊断
@@ -909,7 +1020,7 @@ export default function App() {
                   </div>
 
                   {/* AI Actionable Cards */}
-                  {aiData.action_items?.length > 0 && (
+                  {aiData.action_items?.length > 0 && !(aiData.holding_analysis?.length > 0) && (
                     <div className="mb-10">
                       <h3 className="text-lg font-bold text-slate-300 mb-4 flex items-center gap-2">
                         <Activity className="w-5 h-5 text-indigo-400"/> 具体标的建议

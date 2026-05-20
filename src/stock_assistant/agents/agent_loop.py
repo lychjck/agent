@@ -11,10 +11,12 @@ from stock_assistant.agents.agent_coverage import (
 from stock_assistant.agents.agent_loop_events import agent_log, tool_agent_event
 from stock_assistant.agents.agent_loop_handlers import (
     persist_final_report,
+    run_auto_web_read_gate,
     run_missing_technical_gate,
     run_tool_calls,
 )
 from stock_assistant.agents.agent_loop_runtime import build_agent_loop_runtime
+from stock_assistant.agents.agent_loop_state import AgentLoopState, message_chars
 from stock_assistant.agents.agent_protocol import (
     build_act_prompt,
     build_after_reflection_prompt,
@@ -24,9 +26,77 @@ from stock_assistant.agents.agent_protocol import (
 )
 from stock_assistant.agents.agent_report_merge import merge_final_report_patch, normalize_report_payload
 from stock_assistant.agents.agent_tool_batch import split_oversized_tool_calls
-from stock_assistant.core.llm import llm_enabled
+from stock_assistant.core.llm import configured_model_profiles, llm_enabled
 from stock_assistant.core.llm_tools import call_llm_tool_step
 from stock_assistant.core.utils import config_bool, log
+
+
+RETRYABLE_LLM_CONTEXT_ERRORS = (
+    "model unloaded",
+    "context",
+    "maximum context",
+    "token",
+    "too many tokens",
+    "output limit",
+    "max output",
+    "length",
+    "reasoning_content",
+    "content 为空",
+)
+
+
+def retryable_llm_context_error(detail: str) -> bool:
+    lowered = detail.lower()
+    return any(marker in lowered for marker in RETRYABLE_LLM_CONTEXT_ERRORS)
+
+
+def compact_agent_messages_if_needed(
+    *,
+    state: AgentLoopState,
+    context_settings: dict[str, Any],
+    force: bool = False,
+) -> tuple[int, int]:
+    before_chars = message_chars(state.messages)
+    max_chars = context_settings.get("max_llm_context_chars")
+    if max_chars is None:
+        return 0, before_chars
+
+    max_chars = int(max_chars)
+    keep_recent = int(context_settings.get("llm_context_keep_recent", 8) or 8)
+    compacted = state.compact_messages_for_llm(max_chars=max_chars, keep_recent=keep_recent, force=force)
+    return compacted, before_chars
+
+
+DEFAULT_CONTEXT_SETTINGS = {
+    "compact_tool_observations": False,
+}
+PROFILE_CONTEXT_KEYS = (
+    "max_llm_context_chars",
+    "llm_context_keep_recent",
+    "compact_tool_observations",
+)
+
+
+def _profile_for_model(config: dict[str, Any], model_override: str | None) -> dict[str, Any]:
+    llm = config.get("llm", {}) if isinstance(config.get("llm"), dict) else {}
+    requested = str(model_override or llm.get("model", "")).strip()
+    profiles = configured_model_profiles(llm)
+    if requested in profiles:
+        return profiles[requested]
+    for profile_id, profile in profiles.items():
+        resolved_model = str(profile.get("model") or profile_id).strip()
+        if resolved_model == requested:
+            return profile
+    return {}
+
+
+def model_context_settings(config: dict[str, Any], model_override: str | None = None) -> dict[str, Any]:
+    profile = _profile_for_model(config, model_override)
+    settings: dict[str, Any] = dict(DEFAULT_CONTEXT_SETTINGS)
+    for key in PROFILE_CONTEXT_KEYS:
+        if key in profile:
+            settings[key] = profile[key]
+    return settings
 
 
 async def run_tool_agent_events(
@@ -67,8 +137,18 @@ async def run_tool_agent_events(
     max_turns = runtime.max_turns
     start_turn = runtime.start_turn
     max_calls = runtime.max_calls
+    context_settings = model_context_settings(config, model_override)
+    compact_tool_observations = config_bool(context_settings.get("compact_tool_observations", True))
 
-    trace.write("agent_start", {"goal": goal, "model": model, "tools": list(registry)})
+    trace.write(
+        "agent_start",
+        {
+            "goal": goal,
+            "model": model,
+            "tools": list(registry),
+            "context_settings": context_settings,
+        },
+    )
     trace_status = str(trace.path) if trace.enabled else "disabled"
     agent_log(
         run_id,
@@ -81,6 +161,40 @@ async def run_tool_agent_events(
     yield tool_agent_event("agent_start", "继续 AI 工具调用分析" if resume_state else "开始 AI 工具调用分析", run_id=run_id)
 
     for turn in range(start_turn, max_turns + 1):
+        compacted_messages, before_chars = compact_agent_messages_if_needed(
+            state=state,
+            context_settings=context_settings,
+        )
+        if compacted_messages:
+            after_chars = message_chars(state.messages)
+            trace.write(
+                "context_compaction",
+                {
+                    "turn": turn,
+                    "reason": "before_llm_request",
+                    "compacted_messages": compacted_messages,
+                    "before_chars": before_chars,
+                    "after_chars": after_chars,
+                },
+            )
+            agent_log(
+                run_id,
+                (
+                    f"context_compaction reason=before_llm_request compacted={compacted_messages} "
+                    f"chars={before_chars}->{after_chars}"
+                ),
+                turn=turn,
+                level="WARN",
+            )
+            yield tool_agent_event(
+                "context_compaction",
+                "已压缩历史上下文后继续请求 LLM",
+                run_id=run_id,
+                turn=turn,
+                compacted_messages=compacted_messages,
+                before_chars=before_chars,
+                after_chars=after_chars,
+            )
         trace.write("llm_request", {"turn": turn, "message_count": len(state.messages)})
         agent_log(run_id, f"llm_request messages={len(state.messages)}", turn=turn)
         yield tool_agent_event("llm_turn", "AI 正在决定下一步", run_id=run_id, turn=turn)
@@ -93,25 +207,78 @@ async def run_tool_agent_events(
             detail = str(exc)
             if state.reflection_required and not detail:
                 detail = "工具 observation 后必须先输出 observation_reflection"
-            trace.write("error", {"turn": turn, "error": detail})
-            agent_log(run_id, f"llm_response_parse_failed paused error={detail}", turn=turn, level="ERROR")
-            state.messages.append({
-                "role": "user",
-                "content": (
-                    "上一轮输出无法解析，运行已暂停并保留上下文。继续时请只输出一个合法 JSON 对象，"
-                    "不要 Markdown，不要 channel 标记。根据当前证据继续：如果还缺信息输出 tool_calls，"
-                    "如果刚收到工具 observation 输出 observation_reflection，如果信息足够输出 final_report。"
-                ),
-            })
-            yield tool_agent_event(
-                "paused",
-                "LLM 输出无法解析，已暂停并保存可继续状态",
-                run_id=run_id,
-                turn=turn,
-                error=detail,
-                checkpoint=state.checkpoint(workspace, turn + 1),
-            )
-            return
+            if retryable_llm_context_error(detail):
+                compacted_messages, before_chars = compact_agent_messages_if_needed(
+                    state=state,
+                    context_settings=context_settings,
+                    force=True,
+                )
+                after_chars = message_chars(state.messages)
+                trace.write(
+                    "context_compaction",
+                    {
+                        "turn": turn,
+                        "reason": "retry_after_llm_error",
+                        "error": detail,
+                        "compacted_messages": compacted_messages,
+                        "before_chars": before_chars,
+                        "after_chars": after_chars,
+                    },
+                )
+                agent_log(
+                    run_id,
+                    (
+                        f"context_compaction reason=retry_after_llm_error compacted={compacted_messages} "
+                        f"chars={before_chars}->{after_chars} error={detail[:200]}"
+                    ),
+                    turn=turn,
+                    level="WARN",
+                )
+                yield tool_agent_event(
+                    "context_compaction",
+                    "LLM 上下文/输出异常，已压缩后重试一次",
+                    run_id=run_id,
+                    turn=turn,
+                    compacted_messages=compacted_messages,
+                    before_chars=before_chars,
+                    after_chars=after_chars,
+                    error=detail,
+                )
+                try:
+                    started = time.monotonic()
+                    step = call_llm_tool_step(state.messages, schemas, config, model_override=model_override)
+                    elapsed = time.monotonic() - started
+                except Exception as retry_exc:  # noqa: BLE001
+                    detail = str(retry_exc) or detail
+                else:
+                    trace.write(
+                        "llm_retry_success",
+                        {"turn": turn, "after_error": detail, "elapsed_seconds": round(elapsed, 2)},
+                    )
+                    agent_log(run_id, "llm_retry_success after context compaction", turn=turn, level="INFO")
+                    detail = ""
+            if not detail:
+                pass
+            else:
+                trace.write("error", {"turn": turn, "error": detail})
+                agent_log(run_id, f"llm_response_parse_failed paused error={detail}", turn=turn, level="ERROR")
+                state.messages.append({
+                    "role": "user",
+                    "content": (
+                        "上一轮输出无法解析，运行已暂停并保留上下文。继续时请只输出一个合法 JSON 对象，"
+                        "不要 Markdown，不要 channel 标记。根据当前证据继续：如果还缺信息输出 tool_calls，"
+                        "如果刚收到工具 observation 输出 observation_reflection，如果信息足够输出 final_report。"
+                    ),
+                })
+                yield tool_agent_event(
+                    "paused",
+                    "LLM 输出无法解析，已暂停并保存可继续状态",
+                    run_id=run_id,
+                    turn=turn,
+                    error=detail,
+                    checkpoint=state.checkpoint(workspace, turn + 1),
+                )
+                return
 
         trace.write("llm_response", {"turn": turn, "type": step.type, "raw_text": step.raw_text})
         state.messages.append({"role": "assistant", "content": step.raw_text})
@@ -156,6 +323,19 @@ async def run_tool_agent_events(
             message = "research_plan 只能在第一轮输出，中途重新规划会丢失执行上下文"
             trace.write("error", {"turn": turn, "error": message, "raw_text": step.raw_text})
             agent_log(run_id, message, turn=turn, level="WARN")
+            if any(
+                "协议纠偏：research_plan 只能在第一轮输出" in str(item.get("content", ""))
+                for item in state.messages[-3:]
+            ):
+                yield tool_agent_event(
+                    "error",
+                    "LLM 连续中途输出研究计划，已停止以避免空转",
+                    run_id=run_id,
+                    turn=turn,
+                    error=message,
+                    raw_text=step.raw_text,
+                )
+                return
             yield tool_agent_event(
                 "protocol_repair",
                 "LLM 中途重新输出研究计划，已要求回到当前执行状态",
@@ -244,6 +424,7 @@ async def run_tool_agent_events(
                     max_calls=max_calls,
                     missing_codes=missing_codes,
                     gate_status=f"仍有 {len(missing_codes)} 个标的缺少技术指标，后端自动补查",
+                    compact_tool_observations=compact_tool_observations,
                 )
                 for event in events:
                     yield event
@@ -255,9 +436,36 @@ async def run_tool_agent_events(
                 goal,
                 registry,
                 state.web_search_queries,
+                state.web_search_target_codes,
                 state.web_read_count,
             )
             if next_action == "final_report" and external_gap:
+                if state.web_read_count <= 0:
+                    events, completed = run_auto_web_read_gate(
+                        run_id=run_id,
+                        turn=turn,
+                        trace=trace,
+                        registry=registry,
+                        workspace=workspace,
+                        state=state,
+                        max_calls=max_calls,
+                        compact_tool_observations=compact_tool_observations,
+                    )
+                    for event in events:
+                        yield event
+                    if not completed:
+                        return
+                    external_gap = external_research_gap(
+                        workspace,
+                        goal,
+                        registry,
+                        state.web_search_queries,
+                        state.web_search_target_codes,
+                        state.web_read_count,
+                    )
+                if not external_gap:
+                    state.messages.append({"role": "user", "content": build_after_reflection_prompt(last_reflection)})
+                    continue
                 agent_log(
                     run_id,
                     (
@@ -277,6 +485,7 @@ async def run_tool_agent_events(
                     missing_holding_research=external_gap.get("missing_holding_research", []),
                     web_read_count=state.web_read_count,
                     searched_queries=state.web_search_queries,
+                    searched_target_codes=state.web_search_target_codes,
                 )
                 state.messages.append({"role": "user", "content": build_external_research_gate_prompt(external_gap)})
                 continue
@@ -354,6 +563,7 @@ async def run_tool_agent_events(
                     max_calls=max_calls,
                     missing_codes=missing_codes,
                     gate_status=f"最终报告暂缓：仍有 {len(missing_codes)} 个标的缺少技术指标",
+                    compact_tool_observations=compact_tool_observations,
                 )
                 for event in events:
                     yield event
@@ -365,32 +575,60 @@ async def run_tool_agent_events(
                 goal,
                 registry,
                 state.web_search_queries,
+                state.web_search_target_codes,
                 state.web_read_count,
             )
             if external_gap:
-                agent_log(
-                    run_id,
-                    (
-                        "final_report deferred external_research "
-                        f"missing={len(external_gap.get('missing_holding_research') or [])} "
-                        f"web_read_count={state.web_read_count} web_search_count={len(state.web_search_queries)}"
-                    ),
-                    turn=turn,
-                    level="WARN",
-                )
-                trace.write("coverage_gate", {"turn": turn, "type": "external_research", "gap": external_gap})
-                yield tool_agent_event(
-                    "coverage_gate",
-                    "最终报告暂缓：外部搜索/阅读覆盖不足",
-                    run_id=run_id,
-                    turn=turn,
-                    missing_holding_research=external_gap.get("missing_holding_research", []),
-                    web_read_count=state.web_read_count,
-                    searched_queries=state.web_search_queries,
-                )
-                state.reflection_required = False
-                state.messages.append({"role": "user", "content": build_external_research_gate_prompt(external_gap)})
-                continue
+                if state.web_read_count <= 0:
+                    events, completed = run_auto_web_read_gate(
+                        run_id=run_id,
+                        turn=turn,
+                        trace=trace,
+                        registry=registry,
+                        workspace=workspace,
+                        state=state,
+                        max_calls=max_calls,
+                        compact_tool_observations=compact_tool_observations,
+                    )
+                    for event in events:
+                        yield event
+                    if not completed:
+                        return
+                    external_gap = external_research_gap(
+                        workspace,
+                        goal,
+                        registry,
+                        state.web_search_queries,
+                        state.web_search_target_codes,
+                        state.web_read_count,
+                    )
+                if not external_gap:
+                    external_gap = None
+                else:
+                    agent_log(
+                        run_id,
+                        (
+                            "final_report deferred external_research "
+                            f"missing={len(external_gap.get('missing_holding_research') or [])} "
+                            f"web_read_count={state.web_read_count} web_search_count={len(state.web_search_queries)}"
+                        ),
+                        turn=turn,
+                        level="WARN",
+                    )
+                    trace.write("coverage_gate", {"turn": turn, "type": "external_research", "gap": external_gap})
+                    yield tool_agent_event(
+                        "coverage_gate",
+                        "最终报告暂缓：外部搜索/阅读覆盖不足",
+                        run_id=run_id,
+                        turn=turn,
+                        missing_holding_research=external_gap.get("missing_holding_research", []),
+                        web_read_count=state.web_read_count,
+                        searched_queries=state.web_search_queries,
+                        searched_target_codes=state.web_search_target_codes,
+                    )
+                    state.reflection_required = False
+                    state.messages.append({"role": "user", "content": build_external_research_gate_prompt(external_gap)})
+                    continue
             missing_holding_analysis = final_report_missing_holding_analysis(workspace, goal, step.final_report)
             if missing_holding_analysis:
                 agent_log(
@@ -436,6 +674,7 @@ async def run_tool_agent_events(
             state=state,
             max_calls=max_calls,
             calls=step.tool_calls,
+            compact_tool_observations=compact_tool_observations,
         )
         for event in events:
             yield event

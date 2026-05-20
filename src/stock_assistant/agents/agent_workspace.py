@@ -18,6 +18,7 @@ class AgentWorkspace:
         *,
         holdings: list[Holding] | None = None,
         cached_results: list[dict[str, Any]] | None = None,
+        external_evidence: list[dict[str, Any]] | None = None,
     ) -> None:
         self.config = config
         self._holdings = holdings
@@ -29,6 +30,7 @@ class AgentWorkspace:
         self._portfolio_summary: dict[str, Any] | None = None
         self._observations: list[dict[str, Any]] | None = None
         self._previous_snapshot: dict[str, Any] | None | bool = False
+        self.external_evidence: list[dict[str, Any]] = external_evidence or []
         if cached_results is not None:
             self._holdings = holdings_from_results(cached_results)
             self.source = "cached_results"
@@ -131,7 +133,7 @@ class AgentWorkspace:
         return diff_agent_snapshots(self.previous_snapshot(), current_facts)
 
     def build_llm_context(self) -> dict[str, Any]:
-        return build_agent_llm_context(
+        context = build_agent_llm_context(
             holdings=self.ensure_holdings(),
             classifications=self.ensure_classifications(),
             technical_results=self.technical_results,
@@ -143,9 +145,17 @@ class AgentWorkspace:
             ledger_summary=self.ledger_summary,
             config=self.config,
         )
+        if self.external_evidence:
+            context["external_evidence"] = list(self.external_evidence)
+            evidence_index = context.setdefault("evidence_index", {})
+            for item in self.external_evidence:
+                evidence_id = str(item.get("id", "")).strip()
+                if evidence_id:
+                    evidence_index[evidence_id] = item
+        return context
 
     def build_snapshot(self, agent_report: dict[str, Any], model: str | None) -> dict[str, Any]:
-        return build_agent_snapshot(
+        snapshot = build_agent_snapshot(
             source=self.source,
             ledger_summary=self.ledger_summary,
             holdings=self.ensure_holdings(),
@@ -158,3 +168,77 @@ class AgentWorkspace:
             agent_report=agent_report,
             model=model,
         )
+        if self.external_evidence:
+            snapshot["external_evidence"] = list(self.external_evidence)
+        return snapshot
+
+    def record_external_evidence(self, call: Any, observation: Any) -> list[str]:
+        if not getattr(observation, "ok", False):
+            return []
+        result = getattr(observation, "result", {}) or {}
+        if not isinstance(result, dict):
+            return []
+        call_id = str(getattr(call, "id", "") or getattr(observation, "call_id", "") or "call")
+        tool_name = str(getattr(call, "name", "") or getattr(observation, "tool_name", ""))
+        refs: list[str] = []
+
+        if tool_name == "web_search":
+            query = str(result.get("query") or (getattr(call, "arguments", {}) or {}).get("query") or "")
+            for index, item in enumerate(list(result.get("results") or []), start=1):
+                if not isinstance(item, dict):
+                    continue
+                evidence_id = f"web_search:{call_id}:{index}"
+                refs.append(evidence_id)
+                item["evidence_ref"] = evidence_id
+                self.external_evidence.append({
+                    "id": evidence_id,
+                    "type": "web_search_result",
+                    "title": str(item.get("title", ""))[:200],
+                    "facts": {
+                        "query": query,
+                        "title": str(item.get("title", ""))[:300],
+                        "url": str(item.get("url", ""))[:500],
+                        "snippet": str(item.get("snippet", ""))[:1000],
+                        "engine": str(item.get("engine", ""))[:120],
+                    },
+                })
+        elif tool_name == "web_read":
+            evidence_id = f"web_read:{call_id}"
+            refs.append(evidence_id)
+            self.external_evidence.append({
+                "id": evidence_id,
+                "type": "web_read",
+                "title": str(result.get("final_url") or result.get("url") or "")[:200],
+                "facts": {
+                    "url": str(result.get("url", ""))[:500],
+                    "final_url": str(result.get("final_url", ""))[:500],
+                    "content_quality": str(result.get("content_quality", ""))[:80],
+                    "content_preview": str(result.get("content", ""))[:1500],
+                },
+            })
+        elif tool_name == "opencli_command":
+            evidence_id = f"opencli:{call_id}"
+            refs.append(evidence_id)
+            payload = result.get("result")
+            if isinstance(payload, list):
+                payload = payload[:10]
+            self.external_evidence.append({
+                "id": evidence_id,
+                "type": "opencli_result",
+                "title": str(result.get("summary") or f"{result.get('site', '')} {result.get('command', '')}")[:200],
+                "facts": {
+                    "site": str(result.get("site", ""))[:80],
+                    "command": str(result.get("command", ""))[:80],
+                    "summary": str(result.get("summary", ""))[:300],
+                    "result": payload,
+                },
+            })
+
+        if refs:
+            existing = result.get("evidence_refs")
+            merged = [str(item) for item in existing] if isinstance(existing, list) else []
+            for ref in refs:
+                if ref not in merged:
+                    merged.append(ref)
+            result["evidence_refs"] = merged
+        return refs

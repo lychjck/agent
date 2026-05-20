@@ -151,6 +151,8 @@ def build_act_prompt() -> str:
         "sinafinance news/stock、xueqiu search/stock/kline、duckduckgo/google search、web read。"
         "如果 web_search/web_read 可用，且任务涉及 ETF/基金/股票/市场/行业/宏观背景，"
         "必须按 market_context、theme_research、holding_research 三层安排外部研究；通用检索用 web_search，具体站点数据用 opencli_command，得到 URL 后用 web_read 打开相关来源。"
+        "做单标的 holding_research 时，web_search 必须使用 targets=[{code,name}]，topic 可省略，每个 target 只放一个标的，单次最多 4 个 target；"
+        "query 只用于市场/主题级通用检索，不要把多个持仓代码和名称塞进同一个 query。"
         "每次最多并行调用 6 个搜索/读取工具，优先覆盖权重>=1%的标的；不要因为已有技术指标就跳过外部搜索。"
         "每次调用工具前，在 thinking_trace.decision_basis 中说明为什么这个工具能推进任务。"
         "如果已有证据不足，不要输出 final_report；如果缺少 ETF 底层持仓/指数成分等能力，"
@@ -186,6 +188,7 @@ def build_after_reflection_prompt(reflection: dict[str, Any]) -> str:
     return (
         "已记录 observation_reflection。现在请根据 required_tool_calls 或 unsatisfied_needs 继续调用工具。"
         "如果 required_tool_calls 中提到 read_skill、opencli_command、web_search 或 web_read，且这些工具在可用工具列表中，优先执行这些工具。"
+        "如果 required_tool_calls 是单标的调研，web_search 必须使用 targets 数组，单次最多 4 个 target，不要使用一坨 query 覆盖多个标的。"
         "如果还没有完成 market_context、theme_research、holding_research 三层外部研究，不要输出 final_report；继续调用 opencli_command/web_search 或读取来源页。"
         "如果当前工具无法满足某个需求，不要臆测；保留 missing_capabilities，并选择还能推进任务的可用工具。"
     )

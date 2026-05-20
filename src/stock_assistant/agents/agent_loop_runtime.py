@@ -50,6 +50,7 @@ def build_agent_loop_runtime(
     use_native_tools = config_bool(config.get("agent", {}).get("use_native_tools", False))
     initial_messages = build_initial_agent_messages(goal, schemas, use_native_tools=use_native_tools)
     state = AgentLoopState.from_resume(resume_payload, initial_messages)
+    workspace.external_evidence = state.external_evidence
     max_turns = int(config.get("agent", {}).get("max_tool_turns", 12) or 12)
     start_turn = int(resume_payload.get("next_turn", 1) or 1)
     if resume_state:
