@@ -205,7 +205,24 @@ def run_tool_calls(
 ) -> tuple[list[dict[str, Any]], bool]:
     events: list[dict[str, Any]] = []
     executable_calls: list[LlmToolCall] = []
+    skipped_urls: list[str] = []
     for call in calls:
+        # 重复 URL 去重 — 跳过已经读取过的相同 URL，但记录以便反馈给 LLM
+        if call.name == "web_read":
+            url = str(call.arguments.get("url", "")).strip()
+            if url and url in state._web_read_urls:
+                agent_log(
+                    run_id,
+                    f"tool_call_skipped name=web_read reason=duplicate_url url={url[:120]}",
+                    turn=turn,
+                    level="WARN",
+                )
+                trace.write("tool_call_skipped", {"turn": turn, "call": call.model_dump(), "reason": "duplicate_url"})
+                skipped_urls.append(url)
+                continue
+            if url:
+                state._web_read_urls.add(url)
+
         state.tool_call_count += 1
         if state.tool_call_count > max_calls:
             message = f"达到 max_tool_calls={max_calls}，Agent 未完成"
@@ -231,6 +248,15 @@ def run_tool_calls(
             )
         )
         executable_calls.append(call)
+
+    # 如果有被跳过的 web_read，注入一条系统消息告知 LLM，避免它反复重试
+    if skipped_urls:
+        skip_notice = (
+            f"系统提示：本轮有 {len(skipped_urls)} 个 web_read 调用被跳过（URL 已在之前读取过，内容已在上下文中）。"
+            f"被跳过的 URL：{', '.join(skipped_urls[:5])}。"
+            "不要再对这些 URL 调用 web_read。如果需要更多信息，请搜索新的 URL 或换一个来源。"
+        )
+        state.messages.append({"role": "user", "content": skip_notice})
 
     if len(executable_calls) > 1 and all(externally_slow_tool(call.name) for call in executable_calls):
         agent_log(run_id, f"parallel_tool_batch count={len(executable_calls)}", turn=turn)

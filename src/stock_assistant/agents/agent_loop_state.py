@@ -147,6 +147,13 @@ class AgentLoopState:
     web_read_count: int = 0
     pending_final_report: dict[str, Any] | None = None
     external_evidence: list[dict[str, Any]] = field(default_factory=list)
+    # 循环检测：记录 coverage_gate 连续触发次数和上次缺失的 codes
+    _coverage_gate_consecutive: int = field(default=0, repr=False)
+    _coverage_gate_last_missing: set[str] = field(default_factory=set, repr=False)
+    # 重复 URL 去重
+    _web_read_urls: set[str] = field(default_factory=set, repr=False)
+    # 重复 tool_calls 模式检测（记录最近几轮的 tool_calls 签名）
+    _recent_tool_signatures: list[str] = field(default_factory=list, repr=False)
 
     @classmethod
     def from_resume(cls, state: dict[str, Any], initial_messages: list[dict[str, str]]) -> "AgentLoopState":
@@ -269,5 +276,17 @@ class AgentLoopState:
             result_command = str((observation.result or {}).get("command") or command)
             if result_site == "web" and result_command == "read":
                 self.web_read_count += 1
+                self._extract_code_from_url(str((call.arguments.get("options") or {}).get("url", "")))
         if observation.ok and call.name == "web_read":
             self.web_read_count += 1
+            self._extract_code_from_url(str(call.arguments.get("url", "")))
+
+    def _extract_code_from_url(self, url: str) -> None:
+        """从 URL 中提取基金/ETF 代码并注册到 web_search_target_codes，解决 web_read 不注册覆盖的问题。"""
+        if not url:
+            return
+        match = re.search(r"/(\d{6})(?:\.s?html|\.htm|/)", url)
+        if match:
+            code = match.group(1)
+            if code not in self.web_search_target_codes:
+                self.web_search_target_codes.append(code)

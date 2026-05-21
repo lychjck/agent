@@ -466,6 +466,38 @@ async def run_tool_agent_events(
                 if not external_gap:
                     state.messages.append({"role": "user", "content": build_after_reflection_prompt(last_reflection)})
                     continue
+                # 循环检测：如果同一组 missing codes 连续触发超过 3 次，降级放行
+                current_missing = {
+                    str(item.get("code", ""))
+                    for item in (external_gap.get("missing_holding_research") or [])
+                }
+                if current_missing and current_missing <= state._coverage_gate_last_missing:
+                    state._coverage_gate_consecutive += 1
+                else:
+                    state._coverage_gate_consecutive = 1
+                    state._coverage_gate_last_missing = current_missing
+                if state._coverage_gate_consecutive > 3:
+                    agent_log(
+                        run_id,
+                        (
+                            f"external_research_gate_loop_detected consecutive={state._coverage_gate_consecutive} "
+                            f"missing={len(current_missing)} — bypassing gate to avoid infinite loop"
+                        ),
+                        turn=turn,
+                        level="WARN",
+                    )
+                    trace.write(
+                        "coverage_gate_bypass",
+                        {"turn": turn, "reason": "loop_detected", "consecutive": state._coverage_gate_consecutive},
+                    )
+                    yield tool_agent_event(
+                        "coverage_gate_bypass",
+                        f"外部研究覆盖检查连续 {state._coverage_gate_consecutive} 次未收敛，降级放行生成报告",
+                        run_id=run_id,
+                        turn=turn,
+                    )
+                    state.messages.append({"role": "user", "content": build_after_reflection_prompt(last_reflection)})
+                    continue
                 agent_log(
                     run_id,
                     (
@@ -495,6 +527,56 @@ async def run_tool_agent_events(
         if step.type == "tool_calls":
             step.tool_calls = split_oversized_tool_calls(step.tool_calls)
             tool_names = [call.name for call in step.tool_calls]
+
+            # 重复 tool_calls 模式检测：如果最近 4 轮的调用签名出现循环，强制终止
+            call_signature = "|".join(
+                sorted(f"{call.name}:{sorted(call.arguments.get('targets', [{}]), key=lambda x: str(x.get('code','')))[0].get('code','') if call.arguments.get('targets') else call.arguments.get('url', call.arguments.get('query', ''))[:40]}"
+                       for call in step.tool_calls)
+            )
+            state._recent_tool_signatures.append(call_signature)
+            if len(state._recent_tool_signatures) > 6:
+                state._recent_tool_signatures = state._recent_tool_signatures[-6:]
+            # 检测：最近 4 个签名中有 3 个以上相同，或者出现 ABAB 模式
+            recent = state._recent_tool_signatures
+            if len(recent) >= 4:
+                last4 = recent[-4:]
+                # 完全相同的签名出现 3+ 次
+                from collections import Counter
+                sig_counts = Counter(recent[-6:])
+                max_repeat = max(sig_counts.values())
+                # ABAB 模式检测
+                is_abab = (len(last4) == 4 and last4[0] == last4[2] and last4[1] == last4[3] and last4[0] != last4[1])
+                if max_repeat >= 3 or is_abab:
+                    agent_log(
+                        run_id,
+                        f"tool_calls_loop_detected max_repeat={max_repeat} is_abab={is_abab} — forcing final_report",
+                        turn=turn,
+                        level="WARN",
+                    )
+                    trace.write(
+                        "tool_calls_loop_detected",
+                        {"turn": turn, "max_repeat": max_repeat, "is_abab": is_abab, "recent_signatures": recent[-6:]},
+                    )
+                    yield tool_agent_event(
+                        "tool_calls_loop_detected",
+                        f"检测到工具调用循环（重复={max_repeat}, ABAB={is_abab}），强制要求生成最终报告",
+                        run_id=run_id,
+                        turn=turn,
+                    )
+                    state.messages.append({
+                        "role": "user",
+                        "content": (
+                            "系统检测到你最近多轮的工具调用模式高度重复（循环调用相同的搜索/读取），"
+                            "这说明外部来源已经无法提供更多新信息。"
+                            "请立即停止调用工具，基于已有证据输出 final_report。"
+                            "对于证据不足的标的，在 holding_analysis 中将 action_type 设为 hold/watch，"
+                            "并在 limitations 中说明哪些标的的外部研究未能完成。"
+                            "下一步只能输出 observation_reflection（next_action=final_report）或直接输出 final_report。"
+                        ),
+                    })
+                    state.reflection_required = False
+                    continue
+
             agent_log(
                 run_id,
                 f"llm_decision type=tool_calls count={len(tool_names)} tools={tool_names} elapsed={elapsed:.2f}s",
@@ -605,30 +687,62 @@ async def run_tool_agent_events(
                 if not external_gap:
                     external_gap = None
                 else:
-                    agent_log(
-                        run_id,
-                        (
-                            "final_report deferred external_research "
-                            f"missing={len(external_gap.get('missing_holding_research') or [])} "
-                            f"web_read_count={state.web_read_count} web_search_count={len(state.web_search_queries)}"
-                        ),
-                        turn=turn,
-                        level="WARN",
-                    )
-                    trace.write("coverage_gate", {"turn": turn, "type": "external_research", "gap": external_gap})
-                    yield tool_agent_event(
-                        "coverage_gate",
-                        "最终报告暂缓：外部搜索/阅读覆盖不足",
-                        run_id=run_id,
-                        turn=turn,
-                        missing_holding_research=external_gap.get("missing_holding_research", []),
-                        web_read_count=state.web_read_count,
-                        searched_queries=state.web_search_queries,
-                        searched_target_codes=state.web_search_target_codes,
-                    )
-                    state.reflection_required = False
-                    state.messages.append({"role": "user", "content": build_external_research_gate_prompt(external_gap)})
-                    continue
+                    # 循环检测：如果同一组 missing codes 连续触发超过 3 次，降级放行
+                    current_missing = {
+                        str(item.get("code", ""))
+                        for item in (external_gap.get("missing_holding_research") or [])
+                    }
+                    if current_missing and current_missing <= state._coverage_gate_last_missing:
+                        state._coverage_gate_consecutive += 1
+                    else:
+                        state._coverage_gate_consecutive = 1
+                        state._coverage_gate_last_missing = current_missing
+                    if state._coverage_gate_consecutive > 3:
+                        agent_log(
+                            run_id,
+                            (
+                                f"external_research_gate_loop_detected consecutive={state._coverage_gate_consecutive} "
+                                f"missing={len(current_missing)} — bypassing gate for final_report"
+                            ),
+                            turn=turn,
+                            level="WARN",
+                        )
+                        trace.write(
+                            "coverage_gate_bypass",
+                            {"turn": turn, "reason": "loop_detected", "consecutive": state._coverage_gate_consecutive},
+                        )
+                        yield tool_agent_event(
+                            "coverage_gate_bypass",
+                            f"外部研究覆盖检查连续 {state._coverage_gate_consecutive} 次未收敛，降级放行最终报告",
+                            run_id=run_id,
+                            turn=turn,
+                        )
+                        external_gap = None
+                    else:
+                        agent_log(
+                            run_id,
+                            (
+                                "final_report deferred external_research "
+                                f"missing={len(external_gap.get('missing_holding_research') or [])} "
+                                f"web_read_count={state.web_read_count} web_search_count={len(state.web_search_queries)}"
+                            ),
+                            turn=turn,
+                            level="WARN",
+                        )
+                        trace.write("coverage_gate", {"turn": turn, "type": "external_research", "gap": external_gap})
+                        yield tool_agent_event(
+                            "coverage_gate",
+                            "最终报告暂缓：外部搜索/阅读覆盖不足",
+                            run_id=run_id,
+                            turn=turn,
+                            missing_holding_research=external_gap.get("missing_holding_research", []),
+                            web_read_count=state.web_read_count,
+                            searched_queries=state.web_search_queries,
+                            searched_target_codes=state.web_search_target_codes,
+                        )
+                        state.reflection_required = False
+                        state.messages.append({"role": "user", "content": build_external_research_gate_prompt(external_gap)})
+                        continue
             missing_holding_analysis = final_report_missing_holding_analysis(workspace, goal, step.final_report)
             if missing_holding_analysis:
                 agent_log(
