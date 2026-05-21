@@ -33,7 +33,7 @@ ALLOWED_HOLDING_FIELDS = {
     "day_profit",
 }
 
-WEB_SEARCH_TARGET_BATCH_LIMIT = 4
+WEB_SEARCH_TARGET_BATCH_LIMIT = 10
 
 HOLDING_FIELD_ALIASES = {
     "weight": "weight_pct",
@@ -64,12 +64,12 @@ class GetCurrentHoldingsArgs(BaseModel):
 
 
 class GetHoldingTechnicalArgs(BaseModel):
-    codes: list[str] = Field(default_factory=list, min_length=1, max_length=20)
+    codes: list[str] = Field(default_factory=list, min_length=1)
     lookback_days: int = Field(default=120, ge=20, le=250)
 
 
 class GetClassificationArgs(BaseModel):
-    codes: list[str] = Field(default_factory=list, min_length=1, max_length=50)
+    codes: list[str] = Field(default_factory=list, min_length=1)
 
 
 class GetPortfolioProfileArgs(BaseModel):
@@ -145,7 +145,7 @@ class WebSearchArgs(BaseModel):
     targets: list[WebSearchTarget] = Field(
         default_factory=list,
         max_length=12,
-        description="结构化单标的搜索。每个 target 只需要 code/name，topic 可省略；单次最多执行前 4 个 target。",
+        description="结构化单标的搜索。每个 target 只需要 code/name，topic 可省略；单次最多执行前 10 个 target。",
     )
     engines: list[str] = Field(
         default_factory=list, 
@@ -157,7 +157,7 @@ class WebSearchArgs(BaseModel):
 
 class WebReadArgs(BaseModel):
     url: str = Field(min_length=1, max_length=1000)
-    max_chars: int = Field(default=12000, ge=1000, le=30000)
+    max_chars: int = Field(default=0, ge=0)  # 0 表示使用配置值，不限制
 
 
 class OpenCliCommandArgs(BaseModel):
@@ -465,10 +465,16 @@ def handle_list_skills(args: BaseModel, workspace: AgentWorkspace) -> dict[str, 
     query = typed.query.strip().lower()
     records = [record.to_dict() for record in list_installed_skills(workspace.config)]
     if query:
-        records = [
-            record for record in records
-            if query in record.get("name", "").lower() or query in record.get("description", "").lower()
-        ]
+        # 按空格拆分关键词，任意一个关键词命中 name 或 description 即保留
+        keywords = [word for word in query.split() if word]
+        if keywords:
+            records = [
+                record for record in records
+                if any(
+                    keyword in record.get("name", "").lower() or keyword in record.get("description", "").lower()
+                    for keyword in keywords
+                )
+            ]
     return {
         "count": len(records),
         "skills": records,
@@ -559,7 +565,46 @@ def handle_web_search(args: BaseModel, workspace: AgentWorkspace) -> dict[str, A
         for group in results_by_query
         for item in list(group.get("results") or [])
     ]
-    return {
+
+    # 自动 read：如果配置开启，并发读取每个 query 的第一个有效结果，减少一轮 LLM 交互
+    auto_read_enabled = config_bool(search_config.get("auto_read_top_result", True))
+    auto_read_contents: list[dict[str, Any]] = []
+    if auto_read_enabled:
+        # 每个 query 取第一个有效 URL
+        top_urls: list[str] = []
+        seen_urls: set[str] = set()
+        for group in results_by_query:
+            for item in (group.get("results") or []):
+                url = str(item.get("url", "")).strip()
+                if url and url.startswith(("http://", "https://")) and url not in seen_urls:
+                    top_urls.append(url)
+                    seen_urls.add(url)
+                    break
+
+        def _read_url(url: str) -> dict[str, Any]:
+            try:
+                read_args = WebReadArgs(url=url)
+                return handle_web_read(read_args, workspace)
+            except Exception as exc:  # noqa: BLE001
+                return {"url": url, "error": str(exc)[:200], "content": "", "summary": f"读取失败: {exc}"}
+
+        if top_urls:
+            read_workers = min(6, len(top_urls))
+            if len(top_urls) == 1:
+                auto_read_contents.append(_read_url(top_urls[0]))
+            else:
+                with ThreadPoolExecutor(max_workers=read_workers) as executor:
+                    futures_read = {executor.submit(_read_url, url): url for url in top_urls}
+                    ordered = {url: None for url in top_urls}
+                    for future in as_completed(futures_read):
+                        url = futures_read[future]
+                        try:
+                            ordered[url] = future.result()
+                        except Exception as exc:  # noqa: BLE001
+                            ordered[url] = {"url": url, "error": str(exc)[:200], "content": ""}
+                    auto_read_contents = [v for v in ordered.values() if v is not None]
+
+    payload: dict[str, Any] = {
         "query": typed.query,
         "queries": queries,
         "target_codes": [item["code"] for item in target_queries],
@@ -586,12 +631,34 @@ def handle_web_search(args: BaseModel, workspace: AgentWorkspace) -> dict[str, A
             }
             for item in results
         ],
-        "summary": (
+    }
+    if auto_read_contents:
+        payload["auto_read"] = [
+            {
+                "url": r.get("url", ""),
+                "content": r.get("content", ""),
+                "content_quality": r.get("content_quality", "normal"),
+                "quality_warning": r.get("quality_warning", ""),
+                "error": r.get("error", ""),
+                "truncated": r.get("truncated", False),
+            }
+            for r in auto_read_contents
+        ]
+        read_ok = sum(1 for r in auto_read_contents if not r.get("error") and r.get("content"))
+        payload["summary"] = (
+            f"opencli 搜索 {typed.query or 'targets'}，拆分为 {len(queries)} 个查询返回 {len(results)} 条结果，"
+            f"已自动读取 {read_ok}/{len(auto_read_contents)} 个来源页正文"
+            if len(queries) > 1
+            else f"opencli 搜索 {typed.query or queries[0]}，返回 {len(results)} 条结果，"
+            f"已自动读取 {read_ok}/{len(auto_read_contents)} 个来源页正文"
+        )
+    else:
+        payload["summary"] = (
             f"opencli 搜索 {typed.query or 'targets'}，拆分为 {len(queries)} 个查询并返回 {len(results)} 条结果"
             if len(queries) > 1
             else f"opencli 搜索 {typed.query or queries[0]}，返回 {len(results)} 条结果"
-        ),
-    }
+        )
+    return payload
 
 
 def content_quality_warning(text: str, url: str) -> str:
@@ -614,6 +681,10 @@ def handle_web_read(args: BaseModel, workspace: AgentWorkspace) -> dict[str, Any
         raise ValueError("web_read 只允许 http/https URL")
 
     search_config = workspace.config.get("search", {})
+    # max_chars: 优先用调用方传入的值，0 或未传则从配置读，配置也没有则不限制
+    config_max_chars = int(search_config.get("web_read_max_chars", 0) or 0)
+    max_chars = typed.max_chars if typed.max_chars > 0 else config_max_chars
+
     opencli_config = search_config.get("providers", {}).get("opencli", {}) if isinstance(search_config, dict) else {}
     command_path = str(opencli_config.get("command_path", "opencli"))
     if "/" not in command_path and shutil.which(command_path) is None:
@@ -645,18 +716,19 @@ def handle_web_read(args: BaseModel, workspace: AgentWorkspace) -> dict[str, Any
 
     text = (completed.stdout or "").strip()
     final_url = url
-    truncated = len(text) > typed.max_chars
+    truncated = max_chars > 0 and len(text) > max_chars
     quality_warning = content_quality_warning(text, final_url)
+    content = text[:max_chars] if max_chars > 0 else text
     return {
         "url": url,
         "final_url": final_url,
         "content_type": "text/markdown",
-        "content": text[:typed.max_chars],
+        "content": content,
         "truncated": truncated,
         "content_quality": "low" if quality_warning else "normal",
         "quality_warning": quality_warning,
         "summary": (
-            f"读取 {final_url}，返回 {min(len(text), typed.max_chars)} 字符"
+            f"读取 {final_url}，返回 {len(content)} 字符"
             + ("（内容已截断）" if truncated else "")
             + (f"；警告：{quality_warning}" if quality_warning else "")
         ),
@@ -777,7 +849,13 @@ def handle_opencli_command(args: BaseModel, workspace: AgentWorkspace) -> dict[s
             except Exception:
                 fallback_completed = None
         if fallback_completed is None or fallback_completed.returncode != 0:
-            raise RuntimeError(f"opencli 执行失败 exit={completed.returncode}: {detail}")
+            # 提供更明确的错误提示，帮助 LLM 避免无效重试
+            hint = ""
+            if "unknown option" in detail:
+                hint = "。参数错误，请检查该命令支持的 options（代码/搜索词应放在 positionals 而非 options）"
+            elif "fetch failed" in detail or "other side closed" in detail or "timeout" in detail.lower():
+                hint = "。网络/服务端错误，不要用相同参数重试，换一个数据源或跳过此步骤"
+            raise RuntimeError(f"opencli {site} {command} 执行失败 exit={completed.returncode}: {detail[:300]}{hint}")
         completed = fallback_completed
         site = "xueqiu"
         command = "stock"
@@ -882,11 +960,18 @@ def build_agent_tool_registry(config: dict[str, Any]) -> dict[str, AgentToolSpec
             AgentToolSpec(
                 name="opencli_command",
                 description=(
-                    "调用 opencli 的只读站点适配器命令，返回 JSON。先按任务选择具体 site/command，"
-                    "例如 duckduckgo/google/brave/yahoo search 做通用搜索；eastmoney quote/etf/kline/sectors/kuaixun/rank "
-                    "抓 A 股/ETF/板块/快讯；sinafinance news/stock 抓新浪财经快讯和行情；"
-                    "xueqiu search/stock/kline/hot-stock 抓雪球股票信息；web read 用浏览器把 URL 导出为 Markdown。"
-                    "不知道某个命令参数时，按 opencli list/help 暴露的 usage 组织 positionals/options。"
+                    "调用 opencli 的只读站点适配器命令，返回 JSON。先按任务选择具体 site/command。"
+                    "常用命令及参数格式："
+                    "duckduckgo search positionals=['搜索词'] options={region:'cn-zh'}；"
+                    "eastmoney kuaixun（无参数，返回快讯）；"
+                    "eastmoney quote positionals=['512890']（个股/ETF实时行情，代码放 positionals）；"
+                    "eastmoney etf options={sort:'turnover',limit:20}（ETF排行榜，不支持查单只）；"
+                    "eastmoney kline positionals=['512890'] options={period:'daily',limit:60}；"
+                    "eastmoney sectors（板块排行，无参数，可能因网络问题失败）；"
+                    "sinafinance news（财经快讯）；xueqiu stock positionals=['SH512890']；"
+                    "web read options={url:'https://...'}（把URL导出为Markdown）。"
+                    "注意：代码/搜索词放 positionals，命名选项放 options（不带--前缀）。"
+                    "不确定参数时优先用 list_skills 读取 opencli-guide skill。"
                 ),
                 args_model=OpenCliCommandArgs,
                 handler=handle_opencli_command,

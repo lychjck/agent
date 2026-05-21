@@ -260,6 +260,15 @@ class AgentLoopState:
                 query = str((observation.result or {}).get("query") or call.arguments.get("query") or "").strip()
                 if query:
                     self.web_search_queries.append(query)
+            # 统计 auto_read 的 URL 覆盖
+            for read_item in (observation.result or {}).get("auto_read") or []:
+                if not isinstance(read_item, dict):
+                    continue
+                url = str(read_item.get("url", "")).strip()
+                if url and not read_item.get("error") and url not in self._web_read_urls:
+                    self._web_read_urls.add(url)
+                    self.web_read_count += 1
+                    self._extract_code_from_url(url)
         if observation.ok and call.name == "opencli_command":
             site = str(call.arguments.get("site", "")).strip()
             command = str(call.arguments.get("command", "")).strip()
