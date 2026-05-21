@@ -557,7 +557,7 @@ def fetch_url_bytes(url: str, *, timeout_seconds: int) -> tuple[bytes, str, str]
             final_url = response.geturl() if hasattr(response, "geturl") else url
             data = response.read()
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"下载 skill 失败: {exc}") from exc
+        raise RuntimeError(f"URL 请求失败: {exc}") from exc
     return data, content_type, final_url
 
 
