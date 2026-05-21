@@ -662,15 +662,15 @@ export default function App() {
             </p>
           </div>
           
-          <div className="flex flex-col gap-4">
+          <div className="flex w-full flex-col gap-3 md:w-[28rem]">
             {/* Model Selector UI */}
-            <div className="flex items-center gap-3 bg-slate-900/40 backdrop-blur-md border border-white/5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] p-2 pl-4 rounded-[1.25rem]">
-              <Box className="w-4 h-4 text-violet-400" />
+            <div className="flex h-12 w-full items-center gap-3 rounded-[1.25rem] border border-white/5 bg-slate-900/40 p-2 pl-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] backdrop-blur-md">
+              <Box className="h-4 w-4 shrink-0 text-violet-400" />
               <select 
                 value={selectedModel}
                 onChange={(e) => setSelectedModel(e.target.value)}
                 disabled={analyzing}
-                className="bg-transparent text-sm font-semibold text-slate-200 outline-none cursor-pointer pr-4"
+                className="min-w-0 flex-1 cursor-pointer truncate bg-transparent pr-3 text-sm font-semibold text-slate-200 outline-none"
               >
                 {agentModels.map(m => (
                   <option key={m.id} value={m.id} className="bg-[#0B1120] text-slate-200">
@@ -685,18 +685,15 @@ export default function App() {
               </select>
             </div>
             {showModelScopeQuota && (
-              <div className="rounded-2xl border border-violet-400/20 bg-slate-950/50 px-4 py-3 text-xs text-slate-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+              <div className="w-full rounded-2xl border border-violet-400/20 bg-slate-950/50 px-3.5 py-2 text-xs text-slate-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
                 {activeModelRateLimit?.status === 'known' ? (
-                  <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-                    <span className="inline-flex items-center gap-1.5 text-violet-300">
-                      <Activity className="w-3.5 h-3.5" />
-                      ModelScope 额度
+                  <div className="grid grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)_minmax(0,1fr)] items-center gap-3">
+                    <span className="inline-flex min-w-0 items-center gap-1.5 truncate text-violet-300">
+                      <Activity className="h-3.5 w-3.5 shrink-0" />
+                      <span className="truncate">ModelScope 额度</span>
                     </span>
-                    <span>用户剩余 {quotaText(activeModelRateLimit.user_remaining, activeModelRateLimit.user_limit)}</span>
-                    <span>模型剩余 {quotaText(activeModelRateLimit.model_remaining, activeModelRateLimit.model_limit)}</span>
-                    {activeModelRateLimit.updated_at && (
-                      <span className="text-slate-500">更新 {activeModelRateLimit.updated_at}</span>
-                    )}
+                    <span className="truncate">用户 {quotaText(activeModelRateLimit.user_remaining, activeModelRateLimit.user_limit)}</span>
+                    <span className="truncate">模型 {quotaText(activeModelRateLimit.model_remaining, activeModelRateLimit.model_limit)}</span>
                   </div>
                 ) : (
                   <div className="flex items-center gap-2 text-slate-400">
