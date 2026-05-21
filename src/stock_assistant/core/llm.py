@@ -212,7 +212,13 @@ def openai_client_llm(
         raise
     message = response.choices[0].message if response.choices else None
     if message is None:
-        raise RuntimeError(f"LLM 返回为空: choices={response.choices}")
+        raw_body_preview = ""
+        try:
+            if hasattr(raw_response, "content"):
+                raw_body_preview = raw_response.content.decode("utf-8", errors="replace")[:500]
+        except Exception:
+            pass
+        raise RuntimeError(f"LLM 返回为空: {raw_body_preview or f'choices={response.choices}'}")
     content = str(getattr(message, "content", "") or "").strip()
     if content:
         return content

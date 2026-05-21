@@ -46,9 +46,17 @@ RETRYABLE_LLM_CONTEXT_ERRORS = (
     "返回为空",
 )
 
+# choices=None / choices=[] 是 API 服务端问题（限流/故障），不是上下文太长，压缩无效
+RETRYABLE_LLM_CONTEXT_ERRORS_EXCLUDE = (
+    "choices=none",
+    "choices=[]",
+)
+
 
 def retryable_llm_context_error(detail: str) -> bool:
     lowered = detail.lower()
+    if any(marker in lowered for marker in RETRYABLE_LLM_CONTEXT_ERRORS_EXCLUDE):
+        return False
     return any(marker in lowered for marker in RETRYABLE_LLM_CONTEXT_ERRORS)
 
 
