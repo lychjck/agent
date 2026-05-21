@@ -478,7 +478,7 @@ def build_agent_report_messages(context: dict[str, Any]) -> list[dict[str, str]]
 def llm_structured_kwargs(config: dict[str, Any]) -> dict[str, Any]:
     llm = config.get("llm", {})
     kwargs: dict[str, Any] = {}
-    if config_bool(llm.get("disable_thinking", False)):
+    if config_bool(llm.get("disable_thinking", False)) and "claude" in str(llm.get("model", "")).lower():
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
     mode = str(llm.get("structured_output", "auto")).strip().lower()
     if mode == "none":
