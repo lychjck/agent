@@ -694,6 +694,13 @@ def handle_opencli_command(args: BaseModel, workspace: AgentWorkspace) -> dict[s
     if command not in allowed.get(site, set()):
         raise ValueError(f"opencli 命令不在允许列表中: {site} {command}")
 
+    # web read 强制 stdout 模式，避免在项目目录下生成 web-articles 文件和图片
+    if site == "web" and command == "read":
+        if "stdout" not in typed.options:
+            typed.options["stdout"] = True
+        if "download-images" not in typed.options:
+            typed.options["download-images"] = False
+
     search_config = workspace.config.get("search", {})
     opencli_config = search_config.get("providers", {}).get("opencli", {}) if isinstance(search_config, dict) else {}
     command_path = str(opencli_config.get("command_path", "opencli"))
