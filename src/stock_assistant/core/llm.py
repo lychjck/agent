@@ -190,6 +190,25 @@ def openai_client_llm(
     except Exception as exc:
         error_response = getattr(exc, "response", None)
         record_modelscope_rate_limit(base_url, str(llm["model"]), getattr(error_response, "headers", None))
+        # 如果是 JSON 解析错误（如 Extra data），尝试从 raw response body 中提取 content
+        if "extra data" in str(exc).lower() or "expecting" in str(exc).lower():
+            try:
+                import json as _json
+                raw_body = raw_response.content if hasattr(raw_response, "content") else (
+                    error_response.content if error_response and hasattr(error_response, "content") else None
+                )
+                if raw_body:
+                    body_text = raw_body.decode("utf-8") if isinstance(raw_body, bytes) else str(raw_body)
+                    payload = _json.loads(body_text[:body_text.index("}{") + 1] if "}{" in body_text else body_text)
+                    choices = payload.get("choices", [])
+                    if choices and isinstance(choices[0], dict):
+                        msg = choices[0].get("message", {})
+                        fallback_content = str(msg.get("content", "")).strip()
+                        if fallback_content:
+                            log(f"openai parse() 失败但从 raw body 恢复了 content: {str(exc)[:80]}", level="WARN")
+                            return fallback_content
+            except Exception:
+                pass
         raise
     message = response.choices[0].message
     content = str(getattr(message, "content", "") or "").strip()
