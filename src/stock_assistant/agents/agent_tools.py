@@ -612,18 +612,45 @@ def handle_web_read(args: BaseModel, workspace: AgentWorkspace) -> dict[str, Any
     url = typed.url.strip()
     if not url.startswith(("http://", "https://")):
         raise ValueError("web_read 只允许 http/https URL")
-    timeout_seconds = int(workspace.config.get("search", {}).get("timeout_seconds", 20) or 20)
-    data, content_type, final_url = fetch_url_bytes(url, timeout_seconds=timeout_seconds)
-    text = data.decode("utf-8", errors="replace")
-    if "html" in content_type:
-        text = strip_html_tags(text)
-    text = text.strip()
+
+    search_config = workspace.config.get("search", {})
+    opencli_config = search_config.get("providers", {}).get("opencli", {}) if isinstance(search_config, dict) else {}
+    command_path = str(opencli_config.get("command_path", "opencli"))
+    if "/" not in command_path and shutil.which(command_path) is None:
+        raise RuntimeError(f"opencli command not found: {command_path}")
+
+    cmd = [command_path]
+    profile = str(opencli_config.get("profile", "")).strip()
+    if profile:
+        cmd.extend(["--profile", profile])
+    cmd.extend(["web", "read", "--url", url, "--stdout", "--download-images", "false"])
+
+    timeout_seconds = int(search_config.get("timeout_seconds", 30) or 30)
+    try:
+        completed = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"opencli web read 超时 ({timeout_seconds}s): {url}")
+    except Exception as exc:
+        raise RuntimeError(f"opencli web read 执行失败: {exc}") from exc
+
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()[:300]
+        raise RuntimeError(f"opencli web read 失败 exit={completed.returncode}: {detail}")
+
+    text = (completed.stdout or "").strip()
+    final_url = url
     truncated = len(text) > typed.max_chars
     quality_warning = content_quality_warning(text, final_url)
     return {
         "url": url,
         "final_url": final_url,
-        "content_type": content_type,
+        "content_type": "text/markdown",
         "content": text[:typed.max_chars],
         "truncated": truncated,
         "content_quality": "low" if quality_warning else "normal",

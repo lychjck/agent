@@ -348,14 +348,12 @@ class TestAgentTools(unittest.TestCase):
                 workspace,
             )
             search_cmd = run.call_args.args[0]
-        with patch(
-            "stock_assistant.agents.agent_tools.fetch_url_bytes",
-            return_value=(
-                "<html><body><script>noise()</script><p>正文行情</p></body></html>".encode("utf-8"),
-                "text/html",
-                "https://example.com/a",
-            ),
-        ):
+        with patch("stock_assistant.agents.agent_tools.subprocess.run") as read_run:
+            read_run.return_value = MagicMock(
+                returncode=0,
+                stdout="正文行情",
+                stderr="",
+            )
             read = registry["web_read"].handler(
                 registry["web_read"].args_model(url="https://example.com/a"),
                 workspace,
@@ -530,13 +528,16 @@ class TestAgentTools(unittest.TestCase):
     def test_web_read_marks_low_quality_login_pages(self):
         config = deepcopy(self.config)
         config["agent"]["allow_external_search_tools"] = True
+        config["search"]["providers"]["opencli"] = {"command_path": "/opt/bin/opencli"}
         workspace = AgentWorkspace(config, holdings=self.holdings)
         registry = build_agent_tool_registry(config)
 
-        with patch(
-            "stock_assistant.agents.agent_tools.fetch_url_bytes",
-            return_value=("请登录 注册 验证码 扫码 立即登录".encode("utf-8"), "text/html", "https://xueqiu.com/a"),
-        ):
+        with patch("stock_assistant.agents.agent_tools.subprocess.run") as run:
+            run.return_value = MagicMock(
+                returncode=0,
+                stdout="请登录 注册 验证码 扫码 立即登录",
+                stderr="",
+            )
             read = registry["web_read"].handler(
                 registry["web_read"].args_model(url="https://xueqiu.com/a"),
                 workspace,
