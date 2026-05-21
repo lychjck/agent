@@ -16,7 +16,8 @@ def build_initial_agent_messages(goal: str, tools: list[dict[str, Any]], use_nat
     skill_rule = ""
     if {"list_skills", "read_skill"} <= tool_names:
         skill_rule = (
-            "Skill 使用硬性规则：如果 list_skills 返回 count>0，下一步必须 read_skill 读取最相关 skill 的 SKILL.md；"
+            "Skill 使用硬性规则：第一轮 research_plan 之后的第一次 tool_calls 必须包含 list_skills；"
+            "如果 list_skills 返回 count>0，下一步必须 read_skill 读取最相关 skill 的 SKILL.md；"
             "在 read_skill 完成前，不能把 skill 发现视为已满足，不能输出 final_report。"
         )
         if "read_skill_file" in tool_names:
