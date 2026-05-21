@@ -5,6 +5,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 import api.main as api
+from stock_assistant.core.llm import record_modelscope_rate_limit
 
 
 class TestAgentToolApi(unittest.TestCase):
@@ -106,6 +107,56 @@ class TestAgentToolApi(unittest.TestCase):
             self.assertEqual([item["id"] for item in payload["models"]], ["local-model", "custom-model"])
             self.assertEqual(payload["models"][0]["provider"], "Local")
             self.assertEqual(payload["models"][1]["name"], "custom-model")
+        finally:
+            api.config["llm"] = original_llm_config
+
+    def test_agent_models_include_modelscope_rate_limit_after_call(self):
+        original_llm_config = dict(api.config.get("llm", {}))
+        try:
+            api.config["llm"] = {
+                "model": "deepseek-ai/DeepSeek-V3",
+                "base_url": "https://api-inference.modelscope.cn/v1/",
+                "model_profiles": {},
+            }
+            record_modelscope_rate_limit(
+                "https://api-inference.modelscope.cn/v1/",
+                "deepseek-ai/DeepSeek-V3",
+                {
+                    "modelscope-ratelimit-requests-limit": "2000",
+                    "modelscope-ratelimit-requests-remaining": "1998",
+                    "modelscope-ratelimit-model-requests-limit": "200",
+                    "modelscope-ratelimit-model-requests-remaining": "198",
+                },
+            )
+
+            response = TestClient(api.app).get("/api/agent/models")
+
+            self.assertEqual(response.status_code, 200)
+            model = response.json()["models"][0]
+            self.assertEqual(model["provider"], "ModelScope")
+            self.assertEqual(model["rate_limit"]["status"], "known")
+            self.assertEqual(model["rate_limit"]["user_limit"], 2000)
+            self.assertEqual(model["rate_limit"]["user_remaining"], 1998)
+            self.assertEqual(model["rate_limit"]["model_limit"], 200)
+            self.assertEqual(model["rate_limit"]["model_remaining"], 198)
+        finally:
+            api.config["llm"] = original_llm_config
+
+    def test_agent_models_marks_modelscope_rate_limit_unknown_before_call(self):
+        original_llm_config = dict(api.config.get("llm", {}))
+        try:
+            api.config["llm"] = {
+                "model": "vendor/new-model",
+                "base_url": "https://api-inference.modelscope.cn/v1/",
+                "model_profiles": {},
+            }
+
+            response = TestClient(api.app).get("/api/agent/models")
+
+            self.assertEqual(response.status_code, 200)
+            rate_limit = response.json()["models"][0]["rate_limit"]
+            self.assertEqual(rate_limit["status"], "unknown")
+            self.assertIn("响应头", rate_limit["note"])
         finally:
             api.config["llm"] = original_llm_config
 

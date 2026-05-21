@@ -18,6 +18,7 @@ from stock_assistant import (
 from stock_assistant.agents.agent import run_agent_analysis, run_agent_analysis_events
 from stock_assistant.agents.agent_loop import run_tool_agent_events
 from stock_assistant.core.llm_tools import parse_llm_tool_step
+from stock_assistant.core.llm import get_modelscope_rate_limit
 from stock_assistant.cli.cli import build_portfolio_profile
 from stock_assistant.core.utils import config_bool
 import logging
@@ -298,16 +299,35 @@ def model_display_name(model_id: str) -> str:
     return model_id.rsplit("/", 1)[-1] if "/" in model_id else model_id
 
 
-def configured_llm_models() -> list[dict[str, str | bool]]:
+def modelscope_usage_note() -> str:
+    return (
+        "ModelScope API-Inference 免费额度：用户总额度当前每天 2000 次；"
+        "单模型每日额度动态调整，最高不超过 200，实际可能更低；"
+        "并发和速率限制会随平台压力动态调整，原则上保障单并发使用。"
+    )
+
+
+def model_rate_limit_info(provider: str, resolved_model: str) -> dict | None:
+    if provider != "ModelScope":
+        return None
+    info = get_modelscope_rate_limit(resolved_model)
+    if not info:
+        return {"provider": "ModelScope", "status": "unknown", "note": "尚未看到该模型的 API-Inference 响应头，运行一次后会显示剩余额度。"}
+    return {**info, "status": "known", "note": modelscope_usage_note()}
+
+
+def configured_llm_models() -> list[dict]:
     llm_config = config.get("llm", {})
     default_model = str(llm_config.get("model", "")).strip()
-    models: list[dict[str, str | bool]] = []
+    models: list[dict] = []
     if default_model:
+        provider = infer_model_provider(str(llm_config.get("base_url", "")))
         models.append({
             "id": default_model,
             "name": model_display_name(default_model),
-            "provider": infer_model_provider(str(llm_config.get("base_url", ""))),
+            "provider": provider,
             "default": True,
+            "rate_limit": model_rate_limit_info(provider, default_model),
         })
 
     profiles = llm_config.get("model_profiles", {})
@@ -319,14 +339,16 @@ def configured_llm_models() -> list[dict[str, str | bool]]:
             if not model_id:
                 continue
             resolved_model = str(profile.get("model") or model_id).strip()
+            provider = infer_model_provider(str(profile.get("base_url", llm_config.get("base_url", ""))))
             models.append({
                 "id": model_id,
                 "name": model_display_name(resolved_model),
-                "provider": infer_model_provider(str(profile.get("base_url", llm_config.get("base_url", "")))),
+                "provider": provider,
                 "default": model_id == default_model,
+                "rate_limit": model_rate_limit_info(provider, resolved_model),
             })
 
-    deduped: list[dict[str, str | bool]] = []
+    deduped: list[dict] = []
     seen: set[str] = set()
     for item in models:
         model_id = str(item.get("id", "")).strip()

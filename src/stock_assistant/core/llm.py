@@ -1,12 +1,24 @@
 import datetime as dt
 import json
 import os
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
 
 from stock_assistant.core.utils import compact_result_for_llm, config_bool, log
+
+
+MODELSCOPE_RATE_LIMIT_HEADERS = {
+    "user_limit": "modelscope-ratelimit-requests-limit",
+    "user_remaining": "modelscope-ratelimit-requests-remaining",
+    "model_limit": "modelscope-ratelimit-model-requests-limit",
+    "model_remaining": "modelscope-ratelimit-model-requests-remaining",
+}
+
+_modelscope_rate_limits: dict[str, dict[str, Any]] = {}
+_modelscope_rate_limits_lock = threading.Lock()
 
 
 def configured_model_profiles(llm: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -67,6 +79,64 @@ def llm_api_key(llm: dict[str, Any]) -> str:
         return inline_key
     return ""
 
+
+def _header_value(headers: Any, name: str) -> str:
+    if not headers:
+        return ""
+    getter = getattr(headers, "get", None)
+    if callable(getter):
+        value = getter(name)
+        if value is not None:
+            return str(value)
+        value = getter(name.lower())
+        if value is not None:
+            return str(value)
+    if isinstance(headers, dict):
+        lowered = name.lower()
+        for key, value in headers.items():
+            if str(key).lower() == lowered:
+                return str(value)
+    return ""
+
+
+def _parse_int_header(value: str) -> int | None:
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def record_modelscope_rate_limit(base_url: str, model: str, headers: Any) -> None:
+    if "modelscope" not in base_url.lower():
+        return
+
+    values: dict[str, int] = {}
+    for key, header_name in MODELSCOPE_RATE_LIMIT_HEADERS.items():
+        parsed = _parse_int_header(_header_value(headers, header_name))
+        if parsed is not None:
+            values[key] = parsed
+    if not values:
+        return
+
+    snapshot: dict[str, Any] = {
+        "provider": "ModelScope",
+        "model": model,
+        "updated_at": dt.datetime.now().isoformat(timespec="seconds"),
+    }
+    snapshot.update(values)
+    with _modelscope_rate_limits_lock:
+        previous = _modelscope_rate_limits.get(model, {})
+        _modelscope_rate_limits[model] = {**previous, **snapshot}
+
+
+def get_modelscope_rate_limit(model: str) -> dict[str, Any] | None:
+    with _modelscope_rate_limits_lock:
+        snapshot = _modelscope_rate_limits.get(model)
+        return dict(snapshot) if snapshot else None
+
 def openai_client_llm(
     messages: list[dict[str, str]],
     config: dict[str, Any],
@@ -113,7 +183,14 @@ def openai_client_llm(
             raise RuntimeError("LLM stream 只返回了 reasoning_content，正文 content 为空。")
         raise RuntimeError("LLM stream 返回为空。")
 
-    response = client.chat.completions.create(**kwargs)
+    try:
+        raw_response = client.chat.completions.with_raw_response.create(**kwargs)
+        record_modelscope_rate_limit(base_url, str(llm["model"]), raw_response.headers)
+        response = raw_response.parse()
+    except Exception as exc:
+        error_response = getattr(exc, "response", None)
+        record_modelscope_rate_limit(base_url, str(llm["model"]), getattr(error_response, "headers", None))
+        raise
     message = response.choices[0].message
     content = str(getattr(message, "content", "") or "").strip()
     if content:
@@ -160,8 +237,10 @@ def urllib_llm(
     )
     try:
         with urllib.request.urlopen(request, timeout=int(llm["timeout_seconds"])) as response:
+            record_modelscope_rate_limit(base_url, str(llm["model"]), response.headers)
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
+        record_modelscope_rate_limit(base_url, str(llm["model"]), exc.headers)
         error_body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"LLM HTTP {exc.code}: {error_body}") from exc
 

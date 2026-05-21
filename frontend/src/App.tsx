@@ -20,11 +20,23 @@ type AgentTraceEntry = {
 
 type AgentPayload = Record<string, unknown>;
 
+type ModelScopeRateLimit = {
+  provider?: string;
+  status?: string;
+  note?: string;
+  updated_at?: string;
+  user_limit?: number;
+  user_remaining?: number;
+  model_limit?: number;
+  model_remaining?: number;
+};
+
 type AgentModelOption = {
   id: string;
   name: string;
   provider: string;
   default?: boolean;
+  rate_limit?: ModelScopeRateLimit | null;
 };
 
 const formatMoney = (value: any) => `¥ ${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -132,6 +144,15 @@ const isRecord = (value: unknown): value is AgentPayload => (
 const textValue = (value: unknown) => {
   if (value === undefined || value === null) return '';
   return String(value);
+};
+
+const selectedModelInfo = (models: AgentModelOption[], id: string) => (
+  models.find(model => model.id === id) || models[0] || null
+);
+
+const quotaText = (remaining?: number, limit?: number) => {
+  if (typeof remaining !== 'number') return '未知';
+  return typeof limit === 'number' ? `${remaining}/${limit}` : `${remaining}`;
 };
 
 const formatJson = (value: unknown) => {
@@ -423,6 +444,9 @@ export default function App() {
       events.forEach((event: unknown) => {
         if (isRecord(event)) applyAgentPayload(event);
       });
+      if (events.length > 0) {
+        await fetchAgentModels();
+      }
       runEventIndexRef.current = Number(payload.next_index || runEventIndexRef.current);
       const status = textValue(payload.status);
       setAgentRunStatus(status);
@@ -608,6 +632,9 @@ export default function App() {
   const etfProfit = etfHoldings.reduce((sum: number, h: any) => sum + (h.hold_profit || 0), 0);
   const fundProfit = fundHoldings.reduce((sum: number, h: any) => sum + (h.hold_profit || 0), 0);
   const selectedTrace = analysisTrace.find(item => item.id === selectedTraceId) || analysisTrace[analysisTrace.length - 1] || null;
+  const activeModelInfo = selectedModelInfo(agentModels, selectedModel);
+  const activeModelRateLimit = activeModelInfo?.rate_limit || null;
+  const showModelScopeQuota = activeModelInfo?.provider === 'ModelScope';
 
   return (
     <div className="min-h-screen bg-[#0B1120] p-4 sm:p-6 md:p-8 xl:p-12 text-slate-100 font-sans selection:bg-amber-500/30">
@@ -653,6 +680,28 @@ export default function App() {
                 )}
               </select>
             </div>
+            {showModelScopeQuota && (
+              <div className="rounded-2xl border border-violet-400/20 bg-slate-950/50 px-4 py-3 text-xs text-slate-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+                {activeModelRateLimit?.status === 'known' ? (
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                    <span className="inline-flex items-center gap-1.5 text-violet-300">
+                      <Activity className="w-3.5 h-3.5" />
+                      ModelScope 额度
+                    </span>
+                    <span>用户剩余 {quotaText(activeModelRateLimit.user_remaining, activeModelRateLimit.user_limit)}</span>
+                    <span>模型剩余 {quotaText(activeModelRateLimit.model_remaining, activeModelRateLimit.model_limit)}</span>
+                    {activeModelRateLimit.updated_at && (
+                      <span className="text-slate-500">更新 {activeModelRateLimit.updated_at}</span>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-slate-400">
+                    <Activity className="w-3.5 h-3.5 text-violet-300" />
+                    <span>ModelScope 额度将在该模型调用后显示</span>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="flex flex-col sm:flex-row gap-3">
               <button
