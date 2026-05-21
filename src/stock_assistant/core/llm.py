@@ -210,7 +210,9 @@ def openai_client_llm(
             except Exception:
                 pass
         raise
-    message = response.choices[0].message
+    message = response.choices[0].message if response.choices else None
+    if message is None:
+        raise RuntimeError(f"LLM 返回为空: choices={response.choices}")
     content = str(getattr(message, "content", "") or "").strip()
     if content:
         return content
