@@ -576,6 +576,9 @@ async def run_tool_agent_events(
                         ),
                     })
                     state.reflection_required = False
+                    # 允许 LLM 直接输出 final_report，绕过 last_reflection.next_action 检查
+                    state.reflection_seen = True
+                    state.last_reflection = {"next_action": "final_report", "loop_bypass": True}
                     continue
 
             agent_log(
