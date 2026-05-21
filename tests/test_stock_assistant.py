@@ -73,6 +73,28 @@ class StockAssistantTest(unittest.TestCase):
 
         self.assertEqual(sa.extract_cookie_from_curl(curl_text), "userid=dummy; session=dummy")
 
+    def test_load_config_does_not_merge_example_defaults_when_config_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(
+                """
+[llm]
+enabled = true
+model = "local-only"
+
+[llm.model_profiles."local-only"]
+model = "local-only"
+base_url = "http://127.0.0.1:1234/v1"
+""",
+                encoding="utf-8",
+            )
+
+            config = sa.load_config(path)
+
+        self.assertEqual(config["llm"]["model"], "local-only")
+        self.assertEqual(list(config["llm"]["model_profiles"]), ["local-only"])
+        self.assertNotIn("deepseek-ai/DeepSeek-V3", config["llm"]["model_profiles"])
+
     def test_tzzb_stock_holding_maps_decimal_rate_to_percent(self):
         holding = sa.tzzb_stock_holding(
             {

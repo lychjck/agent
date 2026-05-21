@@ -1,5 +1,6 @@
 import unittest
 import logging
+import tempfile
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -84,6 +85,99 @@ class TestAgentToolApi(unittest.TestCase):
         finally:
             with api.agent_runs_lock:
                 api.agent_runs.pop(run_id, None)
+
+    def test_agent_resume_uses_selected_model_override(self):
+        run_id = "test-resume-model"
+        checkpoint = {"messages": [{"role": "user", "content": "继续"}], "next_turn": 2}
+        started_threads = []
+        original_agent_config = dict(api.config.get("agent", {}))
+
+        class FakeThread:
+            def __init__(self, target, args, daemon):
+                self.target = target
+                self.args = args
+                self.daemon = daemon
+                started_threads.append(self)
+
+            def start(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                api.config.setdefault("agent", {})["snapshot_dir"] = tmpdir
+                with api.agent_runs_lock:
+                    api.agent_runs[run_id] = {
+                        "run_id": run_id,
+                        "status": "paused",
+                        "events": [],
+                        "error": "paused",
+                        "checkpoint": checkpoint,
+                        "request": {
+                            "mode": "tool_agent",
+                            "goal": "分析当前持仓",
+                            "model": "old-model",
+                            "cached_results": None,
+                            "resume_state": None,
+                        },
+                    }
+
+                with patch("api.main.threading.Thread", FakeThread):
+                    response = TestClient(api.app).post(
+                        f"/api/agent/run/{run_id}/resume",
+                        json={"model": "new-model"},
+                    )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["status"], "queued")
+                self.assertEqual(len(started_threads), 1)
+                req = started_threads[0].args[1]
+                self.assertEqual(req.model, "new-model")
+                self.assertEqual(req.resume_state, checkpoint)
+                with api.agent_runs_lock:
+                    self.assertEqual(api.agent_runs[run_id]["request"]["model"], "new-model")
+                recovered = api.load_agent_run_checkpoint(run_id)
+                self.assertIsNotNone(recovered)
+                self.assertEqual(recovered["request"]["model"], "new-model")
+            finally:
+                api.config["agent"] = original_agent_config
+                with api.agent_runs_lock:
+                    api.agent_runs.pop(run_id, None)
+
+    def test_agent_paused_run_recovers_from_checkpoint_after_memory_clear(self):
+        run_id = "test-paused-recover"
+        original_agent_config = dict(api.config.get("agent", {}))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                api.config.setdefault("agent", {})["snapshot_dir"] = tmpdir
+                with api.agent_runs_lock:
+                    api.agent_runs[run_id] = {
+                        "run_id": run_id,
+                        "status": "paused",
+                        "events": [{"step": "paused", "event_index": 0, "status": "暂停"}],
+                        "snapshot": None,
+                        "error": "paused",
+                        "started_at": "2026-05-21T10:00:00",
+                        "updated_at": "2026-05-21T10:01:00",
+                        "checkpoint": {"messages": [{"role": "user", "content": "继续"}], "next_turn": 2},
+                        "request": {"mode": "tool_agent", "model": "old-model"},
+                        "thread": None,
+                    }
+                api.save_agent_run_checkpoint(run_id)
+                with api.agent_runs_lock:
+                    api.agent_runs.pop(run_id, None)
+
+                response = TestClient(api.app).get(f"/api/agent/run/{run_id}")
+
+                self.assertEqual(response.status_code, 200)
+                payload = response.json()
+                self.assertEqual(payload["status"], "paused")
+                self.assertEqual(payload["events"][0]["step"], "paused")
+                with api.agent_runs_lock:
+                    self.assertIn(run_id, api.agent_runs)
+            finally:
+                api.config["agent"] = original_agent_config
+                with api.agent_runs_lock:
+                    api.agent_runs.pop(run_id, None)
 
     def test_agent_models_come_from_config(self):
         original_llm_config = dict(api.config.get("llm", {}))

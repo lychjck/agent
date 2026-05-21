@@ -537,7 +537,11 @@ export default function App() {
       setAgentRunStatus('');
     } else if (activeRunId && agentRunStatus === 'paused') {
       try {
-        const response = await fetch(`/api/agent/run/${encodeURIComponent(activeRunId)}/resume`, { method: 'POST' });
+        const response = await fetch(`/api/agent/run/${encodeURIComponent(activeRunId)}/resume`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: selectedModel || undefined }),
+        });
         if (!response.ok) {
           const payload = await response.json().catch(() => ({}));
           throw new Error(payload.detail || `HTTP ${response.status}`);

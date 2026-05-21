@@ -2,7 +2,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from stock_assistant.core.utils import config_bool, deep_merge, load_env_file, log
+from stock_assistant.core.utils import config_bool, load_env_file, log
 
 ROOT = Path(__file__).resolve().parent.parent.parent.parent
 DEFAULT_CONFIG = ROOT / "config.toml"
@@ -29,7 +29,7 @@ def load_config(path: Path) -> dict[str, Any]:
     if path.exists():
         log(f"读取配置: {path}")
         with path.open("rb") as fh:
-            config = deep_merge(DEFAULTS, tomllib.load(fh))
+            config = tomllib.load(fh)
     else:
         log(f"未找到配置文件: {path}，使用 config.example.toml 的默认配置。")
     return config

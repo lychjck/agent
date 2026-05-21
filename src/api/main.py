@@ -79,8 +79,78 @@ class AgentRunRequest(BaseModel):
     resume_state: dict | None = None
 
 
+class AgentRunResumeRequest(BaseModel):
+    model: str | None = None
+
+
 agent_runs: dict[str, dict] = {}
 agent_runs_lock = threading.Lock()
+
+
+def agent_run_checkpoint_dir() -> Path:
+    path = Path(config.get("agent", {}).get("snapshot_dir", "data/state")).expanduser() / "agent_runs"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def agent_run_checkpoint_path(run_id: str) -> Path:
+    safe_id = "".join(ch for ch in run_id if ch.isalnum() or ch in {"-", "_"})
+    return agent_run_checkpoint_dir() / f"{safe_id}.json"
+
+
+def save_agent_run_checkpoint(run_id: str) -> None:
+    with agent_runs_lock:
+        record = agent_runs.get(run_id)
+        if not record or record.get("status") != "paused":
+            return
+        payload = {
+            key: value
+            for key, value in record.items()
+            if key not in {"thread"}
+        }
+    path = agent_run_checkpoint_path(run_id)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    log(f"已保存 Agent 暂停状态: {path}", name="api")
+
+
+def write_agent_run_checkpoint_payload(run_id: str, payload: dict) -> None:
+    path = agent_run_checkpoint_path(run_id)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    log(f"已更新 Agent 暂停状态: {path}", name="api")
+
+
+def load_agent_run_checkpoint(run_id: str) -> dict | None:
+    path = agent_run_checkpoint_path(run_id)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        log(f"读取 Agent 暂停状态失败 path={path}: {exc}", level="WARN", name="api")
+        return None
+    if not isinstance(payload, dict) or payload.get("run_id") != run_id:
+        return None
+    payload["thread"] = None
+    return payload
+
+
+def delete_agent_run_checkpoint(run_id: str) -> None:
+    path = agent_run_checkpoint_path(run_id)
+    if path.exists():
+        path.unlink()
+
+
+def get_or_load_agent_run(run_id: str) -> dict | None:
+    with agent_runs_lock:
+        record = agent_runs.get(run_id)
+    if record is not None:
+        return record
+    record = load_agent_run_checkpoint(run_id)
+    if record is None:
+        return None
+    with agent_runs_lock:
+        agent_runs[run_id] = record
+    return record
 
 
 def max_agent_run_events() -> int:
@@ -250,15 +320,18 @@ async def run_agent_job(run_id: str, req: AgentRunRequest) -> None:
                     checkpoint=event.get("checkpoint"),
                     request=req.model_dump(),
                 )
+                save_agent_run_checkpoint(run_id)
             if event.get("step") == "done":
                 snapshot = event.get("snapshot")
                 if isinstance(snapshot, dict):
                     update_agent_run(run_id, snapshot=snapshot)
                 update_agent_run(run_id, status="completed")
+                delete_agent_run_checkpoint(run_id)
         with agent_runs_lock:
             status = agent_runs.get(run_id, {}).get("status")
         if status == "running":
             update_agent_run(run_id, status="completed")
+            delete_agent_run_checkpoint(run_id)
     except asyncio.CancelledError:
         mark_agent_run_cancelled(run_id, "agent run cancelled")
         append_agent_run_event(run_id, {"step": "error", "status": "执行已取消", "error": "agent run cancelled"})
@@ -574,22 +647,35 @@ async def start_agent_run(req: AgentRunRequest = AgentRunRequest()):
 
 
 @app.post("/api/agent/run/{run_id}/resume")
-async def resume_agent_run(run_id: str):
+async def resume_agent_run(run_id: str, resume_req: AgentRunResumeRequest = AgentRunResumeRequest()):
+    record = get_or_load_agent_run(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="agent run not found")
+    checkpoint_payload = None
     with agent_runs_lock:
-        record = agent_runs.get(run_id)
-        if record is None:
-            raise HTTPException(status_code=404, detail="agent run not found")
+        record = agent_runs[run_id]
         if record.get("status") != "paused":
             return {"run_id": run_id, "status": record.get("status")}
         checkpoint = record.get("checkpoint")
         request_payload = dict(record.get("request") or {})
         if not isinstance(checkpoint, dict):
             raise HTTPException(status_code=409, detail="agent run has no checkpoint")
+        requested_model = str(resume_req.model or "").strip()
+        if requested_model:
+            request_payload["model"] = requested_model
         request_payload["resume_state"] = checkpoint
         req = AgentRunRequest.model_validate(request_payload)
+        record["request"] = req.model_dump()
+        checkpoint_payload = {
+            key: value
+            for key, value in record.items()
+            if key not in {"thread"}
+        }
         record["status"] = "queued"
         record["error"] = ""
         record["updated_at"] = dt.datetime.now().isoformat(timespec="seconds")
+    if checkpoint_payload is not None:
+        write_agent_run_checkpoint_payload(run_id, checkpoint_payload)
     thread = threading.Thread(target=run_agent_job_in_thread, args=(run_id, req), daemon=True)
     with agent_runs_lock:
         agent_runs[run_id]["thread"] = thread
@@ -599,10 +685,11 @@ async def resume_agent_run(run_id: str):
 
 @app.post("/api/agent/run/{run_id}/cancel")
 async def cancel_agent_run(run_id: str):
+    record = get_or_load_agent_run(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="agent run not found")
     with agent_runs_lock:
-        record = agent_runs.get(run_id)
-        if record is None:
-            raise HTTPException(status_code=404, detail="agent run not found")
+        record = agent_runs[run_id]
         status = str(record.get("status") or "")
         if status in {"completed", "cancelled", "error"}:
             return {"run_id": run_id, "status": status}
@@ -611,14 +698,14 @@ async def cancel_agent_run(run_id: str):
         "step": "cancelled",
         "status": "用户已终止 AI 分析",
     })
+    delete_agent_run_checkpoint(run_id)
     return {"run_id": run_id, "status": "cancelled"}
 
 
 @app.get("/api/agent/run/{run_id}")
 def get_agent_run(run_id: str, after: int = 0):
     start = max(0, int(after or 0))
-    with agent_runs_lock:
-        record = agent_runs.get(run_id)
+    record = get_or_load_agent_run(run_id)
     if record is None:
         snapshot = recover_latest_trace_snapshot_if_needed()
         if snapshot is None:
