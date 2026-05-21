@@ -5,7 +5,7 @@ from stock_assistant.agents.agent_workspace import AgentWorkspace
 
 
 EXTERNAL_RESEARCH_BATCH_LIMIT = 4
-HOLDING_ANALYSIS_BATCH_LIMIT = 4
+HOLDING_ANALYSIS_BATCH_LIMIT = 20
 
 
 def goal_requires_full_technical_coverage(goal: str) -> bool:

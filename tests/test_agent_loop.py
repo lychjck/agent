@@ -528,17 +528,16 @@ class TestAgentLoop(unittest.TestCase):
     def test_holding_analysis_gate_prompt_limits_current_batch(self):
         missing = [
             {"code": f"51030{index}", "name": f"ETF{index}", "asset_type": "etf"}
-            for index in range(7)
+            for index in range(25)
         ]
 
         prompt = build_holding_analysis_gate_prompt(missing)
 
-        self.assertIn("本轮只补前 4 个缺失标的", prompt)
-        self.assertIn("其余 3 个等下一轮再补", prompt)
-        self.assertIn("holding_analysis 只写本轮列出的最多 4 个标的", prompt)
+        self.assertIn("本轮只补前 20 个缺失标的", prompt)
+        self.assertIn("其余 5 个等下一轮再补", prompt)
+        self.assertIn("holding_analysis 只写本轮列出的最多 20 个标的", prompt)
         self.assertIn("510300 ETF0", prompt)
-        self.assertIn("510303 ETF3", prompt)
-        self.assertNotIn("510304 ETF4", prompt)
+        self.assertNotIn("5103020 ETF20", prompt)
 
 
 if __name__ == "__main__":
