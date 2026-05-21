@@ -98,6 +98,10 @@ cache_dir = "data/research"
 timeout_seconds = 20
 max_results = 5
 search_depth = "basic"
+# 搜索后自动读取每个 query 第一个结果的正文，减少一轮 LLM 交互；设为 false 可关闭
+auto_read_top_result = true
+# web_read 单页最大字符数，0 表示不限制
+web_read_max_chars = 0
 # 可选：none/day/week/month/year。opencli 映射为 --time，Tavily 为 time_range。
 freshness = "year"
 start_date = ""
@@ -161,6 +165,8 @@ tool_agent_default = true
 # 防止 Agent 无限循环的保险丝
 max_tool_turns = 12
 max_tool_calls = 16
+# 单次工具调用结果的最大字符数，超出会被截断；大模型可以设大
+max_observation_chars = 200000
 # 后端内存中每个 UI run 保留的轮询事件数量上限；trace 文件不受此限制。
 max_run_events = 2000
 save_traces = true
@@ -286,3 +292,17 @@ api_key_env = "MODELSCOPE_API_KEY"
 stream = false
 disable_thinking = true
 reasoning_effort = ""
+
+[llm.model_profiles."gemini-2.5-flash-lite"]
+client = "openai"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+model = "gemini-2.5-flash-lite"
+api_key_env = "GEMINI_API_KEY"
+stream = true
+disable_thinking = true
+reasoning_effort = ""
+
+max_llm_context_chars = 400000
+llm_context_keep_recent = 12
+compact_tool_observations = false
+

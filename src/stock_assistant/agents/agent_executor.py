@@ -162,8 +162,12 @@ def execute_tool_call(
     registry: dict[str, AgentToolSpec],
     workspace: AgentWorkspace,
     *,
-    max_observation_chars: int = 12000,
+    max_observation_chars: int | None = None,
 ) -> ToolObservation:
+    if max_observation_chars is None:
+        max_observation_chars = int(
+            workspace.config.get("agent", {}).get("max_observation_chars", 200000) or 200000
+        )
     if call.name not in registry:
         return ToolObservation(
             call_id=call.id,
