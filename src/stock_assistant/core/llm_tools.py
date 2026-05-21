@@ -241,6 +241,9 @@ def extract_json_object(text: str) -> dict[str, Any]:
                 score += 20
             if keys & {"reasoning_summary", "thinking_trace"}:
                 score += 10
+            # 优先选择从文本开头开始的对象（更可能是顶层对象）
+            if index == 0:
+                score += 30
             if score > best_score or (score == best_score and end > best_length):
                 best_payload = payload
                 best_score = score
@@ -261,6 +264,14 @@ def load_json_object(text: str) -> dict[str, Any]:
             payload = salvage_tool_payload(clean)
             if payload is None:
                 raise
+        else:
+            # extract_json_object 可能找到了内部嵌套对象而非顶层对象
+            # 如果提取的对象没有合法的 type 字段，尝试 salvage 恢复
+            extracted_type = str(payload.get("type", "")).strip()
+            if extracted_type not in ("research_plan", "tool_calls", "observation_reflection", "final_report", "final_report_patch"):
+                salvaged = salvage_tool_payload(clean)
+                if salvaged is not None:
+                    payload = salvaged
     if not isinstance(payload, dict):
         raise ValueError("LLM tool step JSON 顶层必须是对象")
     return payload
@@ -452,9 +463,12 @@ def call_llm_tool_step(
         model_override=model_override,
         request_kwargs=request_kwargs,
     )
+    if not text:
+        raise RuntimeError("LLM 返回内容为空 (content 为空)")
     try:
         return parse_llm_tool_step(text)
     except Exception as exc:
+        first_error = str(exc)
         repair_messages = [
             *messages,
             {"role": "assistant", "content": text},
@@ -462,7 +476,7 @@ def call_llm_tool_step(
                 "role": "user",
                 "content": (
                     "上一条输出不是合法的工具调用协议 JSON。"
-                    f"解析错误: {exc}\n"
+                    f"解析错误: {first_error}\n"
                     "请只输出一个合法 JSON 对象，不要 Markdown，不要解释。"
                     "如果这是第一轮规划，格式为 "
                     "{\"type\":\"research_plan\",\"reasoning_summary\":\"任务理解\","
@@ -479,10 +493,18 @@ def call_llm_tool_step(
                 ),
             },
         ]
-        fixed = call_llm(
-            repair_messages,
-            config,
-            model_override=model_override,
-            request_kwargs=request_kwargs,
-        )
-        return parse_llm_tool_step(fixed)
+        try:
+            fixed = call_llm(
+                repair_messages,
+                config,
+                model_override=model_override,
+                request_kwargs=request_kwargs,
+            )
+            if not fixed:
+                raise RuntimeError(f"LLM repair 返回为空; 原始错误: {first_error}")
+            return parse_llm_tool_step(fixed)
+        except Exception as repair_exc:
+            # 将两次失败合并为一个清晰的错误信息，避免 NoneType 等内部异常泄漏
+            raise RuntimeError(
+                f"LLM 输出解析失败且 repair 也失败。原始错误: {first_error}; repair 错误: {repair_exc}"
+            ) from repair_exc
