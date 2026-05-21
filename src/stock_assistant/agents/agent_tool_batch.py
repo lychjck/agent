@@ -12,26 +12,8 @@ def chunked(items: list[str], size: int) -> list[list[str]]:
 
 
 def split_oversized_tool_call(call: LlmToolCall) -> list[LlmToolCall]:
-    if call.name not in {"get_holding_technical", "get_classification"}:
-        return [call]
-    codes = call.arguments.get("codes")
-    if not isinstance(codes, list):
-        return [call]
-    limit = 20 if call.name == "get_holding_technical" else 50
-    if len(codes) <= limit:
-        return [call]
-    split_calls: list[LlmToolCall] = []
-    for index, code_chunk in enumerate(chunked([str(code) for code in codes], limit), start=1):
-        arguments = dict(call.arguments)
-        arguments["codes"] = code_chunk
-        split_calls.append(
-            LlmToolCall(
-                id=f"{call.id or call.name}_part_{index:02d}",
-                name=call.name,
-                arguments=arguments,
-            )
-        )
-    return split_calls
+    """不再分批，直接透传给工具层执行。"""
+    return [call]
 
 
 def split_oversized_tool_calls(calls: list[LlmToolCall]) -> list[LlmToolCall]:

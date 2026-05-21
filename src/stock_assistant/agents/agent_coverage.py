@@ -1,11 +1,11 @@
 from typing import Any
 
-from stock_assistant.agents.agent_tools import is_etf_like_holding
+from stock_assistant.agents.agent_tools import WEB_SEARCH_TARGET_BATCH_LIMIT, is_etf_like_holding
 from stock_assistant.agents.agent_workspace import AgentWorkspace
 
 
-EXTERNAL_RESEARCH_BATCH_LIMIT = 4
-HOLDING_ANALYSIS_BATCH_LIMIT = 20
+EXTERNAL_RESEARCH_BATCH_LIMIT = 50
+HOLDING_ANALYSIS_BATCH_LIMIT = 200
 
 
 def goal_requires_full_technical_coverage(goal: str) -> bool:
@@ -122,11 +122,11 @@ def build_external_research_gate_prompt(gap: dict[str, Any]) -> str:
     return (
         "最终报告暂缓：后端检查发现外部研究覆盖不足，不能把未完成的搜索说成已经覆盖。"
         f"原因：{'; '.join(str(item) for item in gap.get('reasons', []))}。"
-        f"本轮只补前 {len(current_batch)} 个核心标的：{missing_text or '无'}{remaining_text}。"
+        f"本轮需补 {len(current_batch)} 个核心标的：{missing_text or '无'}{remaining_text}。"
         "下一步必须继续调用工具："
         "1) 如果 web_read_count=0，先从已有 opencli_command/web_search 结果中选择最相关 URL 调用 web_read 或 opencli_command(site='web', command='read')；"
-        f"2) 对本轮列出的核心标的分批调用 web_search.targets 或 opencli_command；当前轮次 web_search.targets 最多传 {EXTERNAL_RESEARCH_BATCH_LIMIT} 个 target，"
-        "不要把其它未列出的缺口也塞进同一次调用；"
+        f"2) 对本轮列出的核心标的调用 web_search.targets 或 opencli_command；web_search.targets 单次最多传 {WEB_SEARCH_TARGET_BATCH_LIMIT} 个 target，"
+        "超出时分多次调用即可；"
         "使用 web_search 时必须传 targets=[{code,name}]，每个 target 一个标的，topic 可省略，不要把多个标的塞进 query 字符串；"
         "3) 之后重新 observation_reflection，coverage_notes 必须基于实际工具调用，不得虚报。"
     )
