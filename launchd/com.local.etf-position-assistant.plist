@@ -8,8 +8,11 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/opt/homebrew/bin/python3</string>
-    <string>/Users/liyanran/github/stock/stock_assistant.py</string>
+    <string>/opt/homebrew/bin/uv</string>
+    <string>run</string>
+    <string>python</string>
+    <string>-m</string>
+    <string>stock_assistant.cli</string>
     <string>--config</string>
     <string>/Users/liyanran/github/stock/config.toml</string>
     <string>run</string>
