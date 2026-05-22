@@ -15,12 +15,10 @@ from stock_assistant import (
     llm_enabled, log, holding_to_dict, load_latest_agent_snapshot, list_agent_snapshots,
     save_agent_snapshot,
 )
-from stock_assistant.agents.agent import run_agent_analysis, run_agent_analysis_events
 from stock_assistant.agents.agent_loop import run_tool_agent_events
 from stock_assistant.core.llm_tools import parse_llm_tool_step
 from stock_assistant.core.llm import get_modelscope_rate_limit
 from stock_assistant.cli.cli import build_portfolio_profile
-from stock_assistant.core.utils import config_bool
 import logging
 import sys
 
@@ -67,14 +65,9 @@ load_env_file(Path(".env"))
 config = load_config(CONFIG_PATH)
 ensure_dirs(config)
 
-class AnalyzeRequest(BaseModel):
-    cached_results: list[dict] | None = None
-    model: str | None = None
-
 class AgentRunRequest(BaseModel):
     cached_results: list[dict] | None = None
     model: str | None = None
-    mode: str = "pipeline"
     goal: str | None = None
     resume_state: dict | None = None
 
@@ -280,23 +273,14 @@ def recover_latest_trace_snapshot_if_needed() -> dict | None:
 async def run_agent_job(run_id: str, req: AgentRunRequest) -> None:
     update_agent_run(run_id, status="running")
     try:
-        if req.mode == "tool_agent" or (
-            req.mode == "default" and config_bool(config.get("agent", {}).get("tool_agent_default", False))
-        ):
-            goal = req.goal or "分析当前持仓，给出组合风险、每个 ETF 的建议和需要确认的问题"
-            event_iter = run_tool_agent_events(
-                config,
-                goal=goal,
-                cached_results=req.cached_results,
-                model_override=req.model,
-                resume_state=req.resume_state,
-            )
-        else:
-            event_iter = run_agent_analysis_events(
-                config,
-                cached_results=req.cached_results,
-                model_override=req.model,
-            )
+        goal = req.goal or "分析当前持仓，给出组合风险、每个 ETF 的建议和需要确认的问题"
+        event_iter = run_tool_agent_events(
+            config,
+            goal=goal,
+            cached_results=req.cached_results,
+            model_override=req.model,
+            resume_state=req.resume_state,
+        )
 
         async for event in event_iter:
             if agent_run_cancel_requested(run_id):
@@ -559,64 +543,18 @@ def sse_payload(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
-def legacy_analyze_step(event: dict) -> int:
-    step = event.get("step")
-    if step in {"sync_holdings", "market_data"}:
-        return 1
-    if step == "technical_analysis":
-        return 2
-    if step in {"classify", "portfolio_profile", "portfolio_observations", "llm_report"}:
-        return 3
-    if step in {"save_snapshot", "done"}:
-        return 4
-    return 0
-
-
-@app.post("/api/analyze")
-async def analyze_legacy(req: AnalyzeRequest = AnalyzeRequest()):
-    async def event_generator():
-        try:
-            async for event in run_agent_analysis_events(
-                config,
-                cached_results=req.cached_results,
-                model_override=req.model,
-            ):
-                payload = dict(event)
-                payload["step"] = legacy_analyze_step(event)
-                if event.get("step") == "done":
-                    snapshot = event.get("snapshot")
-                    if isinstance(snapshot, dict):
-                        payload["result"] = snapshot.get("agent_report")
-                yield sse_payload(payload)
-        except Exception as e:  # noqa: BLE001
-            log(f"legacy analyze 失败: {e}", level="ERROR", name="api")
-            yield sse_payload({"step": 0, "error": str(e)})
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
-
-
 @app.post("/api/agent/run/stream")
 async def run_agent_stream(req: AgentRunRequest = AgentRunRequest()):
     async def event_generator():
         try:
-            if req.mode == "tool_agent" or (
-                req.mode == "default" and config_bool(config.get("agent", {}).get("tool_agent_default", False))
+            goal = req.goal or "分析当前持仓，给出组合风险、每个 ETF 的建议和需要确认的问题"
+            async for event in run_tool_agent_events(
+                config,
+                goal=goal,
+                cached_results=req.cached_results,
+                model_override=req.model,
             ):
-                goal = req.goal or "分析当前持仓，给出组合风险、每个 ETF 的建议和需要确认的问题"
-                async for event in run_tool_agent_events(
-                    config,
-                    goal=goal,
-                    cached_results=req.cached_results,
-                    model_override=req.model,
-                ):
-                    yield sse_payload(event)
-            else:
-                async for event in run_agent_analysis_events(
-                    config,
-                    cached_results=req.cached_results,
-                    model_override=req.model,
-                ):
-                    yield sse_payload(event)
+                yield sse_payload(event)
         except Exception as e:  # noqa: BLE001
             log(f"agent stream 失败: {e}", level="ERROR", name="api")
             yield sse_payload({"step": "error", "error": str(e)})

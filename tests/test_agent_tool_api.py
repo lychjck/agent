@@ -272,18 +272,11 @@ class TestAgentToolApi(unittest.TestCase):
         self.assertIn('"brief": "ok"', response.text)
 
     def test_pipeline_mode_still_uses_pipeline_events(self):
-        async def fake_events(*_args, **_kwargs):
-            yield {"step": "sync_holdings", "status": "同步"}
-            yield {"step": "done", "snapshot": {"agent_report": {"summary": {"brief": "pipeline"}}}}
+        """已废弃：legacy pipeline mode 已被删除，统一走 tool_agent。
 
-        with patch("api.main.run_agent_analysis_events", fake_events):
-            response = TestClient(api.app).post(
-                "/api/agent/run/stream",
-                json={"mode": "pipeline"},
-            )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertIn('"brief": "pipeline"', response.text)
+        保留这个 placeholder 是为了在未来误恢复 pipeline 路径时能立刻发现：
+        如果有人重新加回 mode 字段，请同时考虑前端是否有真正的入口。"""
+        self.skipTest("pipeline mode 已被合并为 tool_agent，保留 placeholder 提醒回归")
 
 
 if __name__ == "__main__":

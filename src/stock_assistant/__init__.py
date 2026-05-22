@@ -3,7 +3,6 @@ from pathlib import Path
 from typing import Any
 
 from .services.analysis import analyze_holdings, analyze_one, decide_action
-from .agents.agent import run_agent_analysis, run_agent_analysis_events
 from .agents.agent_loop import run_tool_agent_events
 from .agents.agent_llm import build_agent_llm_context, generate_agent_report_with_llm, parse_agent_report, fallback_agent_report, llm_structured_kwargs
 from .core.llm_tools import parse_llm_tool_step, LlmToolCall, LlmToolStep
@@ -84,7 +83,7 @@ __all__ = [
     "fetch_bars", "analyze_holdings", "analyze_one", "decide_action",
     "llm_enabled", "generate_structured_llm_commentary", "generate_llm_commentary",
     "build_agent_llm_context", "generate_agent_report_with_llm", "parse_agent_report", "fallback_agent_report", "llm_structured_kwargs",
-    "run_agent_analysis", "run_agent_analysis_events", "run_tool_agent_events",
+    "run_tool_agent_events",
     "parse_llm_tool_step", "LlmToolCall", "LlmToolStep",
     "agent_snapshot_fingerprint", "agent_snapshots_have_same_facts",
     "classification_from_config", "classify_holding", "load_cached_classification", "save_classification_cache", "classification_cache_is_fresh", "classification_cache_status",
