@@ -161,7 +161,6 @@ llm_can_create_new_actions = false
 save_snapshots = true
 snapshot_dir = "data/state"
 tool_agent_enabled = true
-tool_agent_default = true
 # 防止 Agent 无限循环的保险丝
 max_tool_turns = 12
 max_tool_calls = 16
