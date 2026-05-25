@@ -305,3 +305,15 @@ max_llm_context_chars = 400000
 llm_context_keep_recent = 12
 compact_tool_observations = false
 
+[mcp]
+max_observation_chars = 12000
+
+[server]
+default_transport = "stdio"
+http_host = "127.0.0.1"
+http_port = 8766
+http_path = "/mcp"
+auth_token = ""
+allow_unauthenticated = true
+
+
