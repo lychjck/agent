@@ -31,4 +31,5 @@ temp_test_search/*
 .idea/
 .omo/run-continuation/ses_1b67892eeffeMlH3dP71HCvJqO.json
 .gitignore
-.antigravitycli/cfbfd4eb-6209-4c55-b2eb-0098676f6de9.json
+.antigravitycli/
+tmp.json
