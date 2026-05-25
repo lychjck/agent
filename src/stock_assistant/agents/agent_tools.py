@@ -72,6 +72,10 @@ class GetClassificationArgs(BaseModel):
     codes: list[str] = Field(default_factory=list, min_length=1)
 
 
+class GetEtfConstituentsArgs(BaseModel):
+    codes: list[str] = Field(default_factory=list, min_length=1)
+
+
 class GetPortfolioProfileArgs(BaseModel):
     include: list[str] = Field(default_factory=list)
 
@@ -414,6 +418,31 @@ def handle_get_classification(args: BaseModel, workspace: AgentWorkspace) -> dic
             for code in codes
         },
         "summary": f"返回 {len(codes)} 个标的分类",
+    }
+
+
+def handle_get_etf_constituents(args: BaseModel, workspace: AgentWorkspace) -> dict[str, Any]:
+    typed = args if isinstance(args, GetEtfConstituentsArgs) else GetEtfConstituentsArgs.model_validate(args)
+    from stock_assistant.integrations.eastmoney import fetch_fund_holdings
+
+    results = {}
+    for code in typed.codes:
+        clean_code = "".join(filter(str.isdigit, code))
+        if len(clean_code) == 6:
+            holdings = fetch_fund_holdings(clean_code)
+            results[code] = {
+                "code": code,
+                "constituents": holdings,
+                "count": len(holdings)
+            }
+        else:
+            results[code] = {
+                "error": f"无效的代码: {code}，请输入6位数字基金/ETF代码"
+            }
+
+    return {
+        "results": results,
+        "summary": f"成功穿透了 {len(results)} 个 ETF，提取了其前十大成分股明细",
     }
 
 
@@ -898,6 +927,12 @@ def build_agent_tool_registry(config: dict[str, Any]) -> dict[str, AgentToolSpec
             description="读取指定当前持仓标的的本地分类和置信度，不触发外部搜索。",
             args_model=GetClassificationArgs,
             handler=handle_get_classification,
+        ),
+        AgentToolSpec(
+            name="get_etf_constituents",
+            description="获取指定 ETF 的前十大底层成分股明细（代码与名称），支持资产穿透与集中度深度分析。",
+            args_model=GetEtfConstituentsArgs,
+            handler=handle_get_etf_constituents,
         ),
         AgentToolSpec(
             name="load_snapshot_summary",

@@ -279,50 +279,35 @@ def serve_http(
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run stock assistant MCP server.")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Path to config.toml")
-    parser.add_argument(
-        "--max-observation-chars",
-        type=int,
-        default=12000,
-        help="Maximum JSON characters returned in one tool observation",
-    )
-    parser.add_argument("--transport", choices=["stdio", "http"], default="stdio", help="MCP transport")
-    parser.add_argument("--host", default="127.0.0.1", help="HTTP host")
-    parser.add_argument("--port", type=int, default=8766, help="HTTP port")
-    parser.add_argument("--path", default=HTTP_DEFAULT_PATH, help="HTTP MCP endpoint path")
-    parser.add_argument("--auth-token", default="", help="Bearer token for HTTP MCP requests")
-    parser.add_argument(
-        "--auth-token-env",
-        default="STOCK_MCP_TOKEN",
-        help="Environment variable containing HTTP bearer token",
-    )
-    parser.add_argument(
-        "--allow-unauthenticated",
-        action="store_true",
-        help="Allow HTTP mode without bearer token",
-    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     config = load_config(Path(args.config).expanduser())
-    server = StockMcpServer(config, max_observation_chars=args.max_observation_chars)
-    if args.transport == "stdio":
+
+    mcp_config = config["mcp"]
+    server_config = config["server"]
+
+    server = StockMcpServer(config, max_observation_chars=mcp_config["max_observation_chars"])
+
+    transport = server_config["default_transport"]
+    if transport == "stdio":
         serve_stdio(server)
         return 0
 
-    auth_token = str(args.auth_token or os.environ.get(args.auth_token_env, "")).strip()
-    if not auth_token and not args.allow_unauthenticated:
+    auth_token = str(server_config["auth_token"]).strip()
+    if not auth_token and not server_config["allow_unauthenticated"]:
         sys.stderr.write(
-            "HTTP MCP server requires --auth-token, "
-            f"{args.auth_token_env}, or --allow-unauthenticated.\n"
+            "HTTP MCP server requires [server] auth_token or allow_unauthenticated=true in config.\n"
         )
         return 2
+
     serve_http(
         server,
-        host=str(args.host),
-        port=int(args.port),
-        mcp_path=str(args.path),
+        host=server_config["http_host"],
+        port=server_config["http_port"],
+        mcp_path=server_config["http_path"],
         auth_token=auth_token,
     )
     return 0

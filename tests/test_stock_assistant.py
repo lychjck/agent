@@ -7,6 +7,50 @@ from pathlib import Path
 
 import stock_assistant as sa
 
+MOCK_CONFIG = {
+    "columns": {},
+    "paths": {
+        "download_dir": "downloads",
+        "report_dir": "reports",
+        "archive_dir": "data/holdings",
+    },
+    "ledger": {
+        "mode": "tzzb_api",
+    },
+    "market": {
+        "provider": "sina",
+    },
+    "analysis": {
+        "loss_alert_pct": -8.0,
+        "max_single_position_pct": 35.0,
+        "min_history_days": 80,
+    },
+    "policy": {
+        "cash_min_pct": 5,
+        "max_single_position_pct": 20,
+        "max_sector_pct": 35,
+        "max_theme_pct": 25,
+        "max_unknown_classification_pct": 10,
+        "loss_alert_pct": -8,
+        "gain_trim_pct": 20,
+    },
+    "llm": {
+        "base_url": "http://127.0.0.1:1234/v1",
+        "model": "local-only",
+    },
+    "mcp": {
+        "max_observation_chars": 12000,
+    },
+    "server": {
+        "default_transport": "stdio",
+        "http_host": "127.0.0.1",
+        "http_port": 8766,
+        "http_path": "/mcp",
+        "auth_token": "",
+        "allow_unauthenticated": True,
+    }
+}
+
 
 class StockAssistantTest(unittest.TestCase):
     def test_parse_holdings_csv_with_chinese_headers(self):
@@ -18,7 +62,7 @@ class StockAssistantTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            holdings = sa.parse_holdings(path, sa.DEFAULTS)
+            holdings = sa.parse_holdings(path, MOCK_CONFIG)
 
         self.assertEqual(len(holdings), 1)
         self.assertEqual(holdings[0].code, "510300")
@@ -45,7 +89,7 @@ class StockAssistantTest(unittest.TestCase):
         ]
         holding = sa.Holding(code="510300", name="沪深300ETF", quantity=100, cost_price=1.5, market_value=239)
 
-        result = sa.analyze_one(holding, bars, sa.DEFAULTS, total_value=1000)
+        result = sa.analyze_one(holding, bars, MOCK_CONFIG, total_value=1000)
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["action"], "")
@@ -61,39 +105,98 @@ class StockAssistantTest(unittest.TestCase):
             drawdown=-15,
             profit_pct=-10,
             weight=20,
-            config=sa.DEFAULTS,
+            config=MOCK_CONFIG,
         )
 
         self.assertEqual(action, "")
         self.assertGreaterEqual(len(reasons), 2)
         self.assertTrue(any("低于 MA60" in reason for reason in reasons))
 
+
     def test_extract_cookie_from_curl(self):
         curl_text = "curl 'https://tzzb.10jqka.com.cn/pc/' -H 'Cookie: userid=dummy; session=dummy'"
 
         self.assertEqual(sa.extract_cookie_from_curl(curl_text), "userid=dummy; session=dummy")
 
-    def test_load_config_does_not_merge_example_defaults_when_config_exists(self):
+    def test_load_config_file_not_found(self):
+        with self.assertRaises(FileNotFoundError):
+            sa.load_config(Path("nonexistent_config_file_xyz.toml"))
+
+    def test_load_config_missing_parameters(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "config.toml"
+            path = Path(tmp) / "bad_config.toml"
             path.write_text(
                 """
-[llm]
-enabled = true
-model = "local-only"
+[paths]
+download_dir = "downloads"
+report_dir = "reports"
+archive_dir = "data/holdings"
 
-[llm.model_profiles."local-only"]
-model = "local-only"
-base_url = "http://127.0.0.1:1234/v1"
+[ledger]
+mode = "tzzb_api"
+
+# 缺失了 [market], [analysis], [policy], [llm] 等绝大部分参数
 """,
                 encoding="utf-8",
             )
+            with self.assertRaises(ValueError) as ctx:
+                sa.load_config(path)
+            
+            # 确认异常消息中明确提示了缺失的字段
+            self.assertIn("缺失配置小节: [market]", str(ctx.exception))
+            self.assertIn("缺失配置小节: [llm]", str(ctx.exception))
 
+    def test_load_config_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "good_config.toml"
+            path.write_text(
+                """
+[paths]
+download_dir = "downloads"
+report_dir = "reports"
+archive_dir = "data/holdings"
+
+[ledger]
+mode = "tzzb_api"
+
+[market]
+provider = "sina"
+
+[analysis]
+loss_alert_pct = -8.0
+max_single_position_pct = 35.0
+min_history_days = 80
+
+[policy]
+cash_min_pct = 5
+max_single_position_pct = 20
+max_sector_pct = 35
+max_theme_pct = 25
+max_unknown_classification_pct = 10
+loss_alert_pct = -8
+gain_trim_pct = 20
+
+[llm]
+base_url = "http://127.0.0.1:1234/v1"
+model = "local-only"
+
+[mcp]
+max_observation_chars = 12000
+
+[server]
+default_transport = "stdio"
+http_host = "127.0.0.1"
+http_port = 8766
+http_path = "/mcp"
+auth_token = ""
+allow_unauthenticated = true
+""",
+                encoding="utf-8",
+            )
             config = sa.load_config(path)
+            self.assertEqual(config["market"]["provider"], "sina")
+            self.assertEqual(config["llm"]["model"], "local-only")
 
-        self.assertEqual(config["llm"]["model"], "local-only")
-        self.assertEqual(list(config["llm"]["model_profiles"]), ["local-only"])
-        self.assertNotIn("deepseek-ai/DeepSeek-V3", config["llm"]["model_profiles"])
 
     def test_tzzb_stock_holding_maps_decimal_rate_to_percent(self):
         holding = sa.tzzb_stock_holding(
@@ -126,8 +229,48 @@ base_url = "http://127.0.0.1:1234/v1"
         m_analyze.return_value = []
         m_gen.return_value = "report"
         m_write.return_value = Path("report.md")
-        config = sa.DEFAULTS.copy()
-        config["ledger"] = {"mode": "tzzb_api"}
+        config = {
+            "paths": {
+                "download_dir": "downloads",
+                "report_dir": "reports",
+                "archive_dir": "data/holdings",
+            },
+            "ledger": {
+                "mode": "tzzb_api",
+            },
+            "market": {
+                "provider": "sina",
+            },
+            "analysis": {
+                "loss_alert_pct": -8.0,
+                "max_single_position_pct": 35.0,
+                "min_history_days": 80,
+            },
+            "policy": {
+                "cash_min_pct": 5,
+                "max_single_position_pct": 20,
+                "max_sector_pct": 35,
+                "max_theme_pct": 25,
+                "max_unknown_classification_pct": 10,
+                "loss_alert_pct": -8,
+                "gain_trim_pct": 20,
+            },
+            "llm": {
+                "base_url": "http://127.0.0.1:1234/v1",
+                "model": "local-only",
+            },
+            "mcp": {
+                "max_observation_chars": 12000,
+            },
+            "server": {
+                "default_transport": "stdio",
+                "http_host": "127.0.0.1",
+                "http_port": 8766,
+                "http_path": "/mcp",
+                "auth_token": "",
+                "allow_unauthenticated": True,
+            }
+        }
         
         sa.run(config, holdings_file=None)
         m_fetch.assert_called_once()
