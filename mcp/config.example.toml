@@ -1,0 +1,36 @@
+[mcp]
+expose_legacy_tzzb_placeholders = true   # 是否注册流水/盈亏等占位工具以防 LLM 无限重试
+log_level = "INFO"
+
+[server]
+default_transport = "stdio"
+http_host = "127.0.0.1"
+http_port = 8766
+http_path = "/mcp"
+auth_token_env = "STOCK_MCP_TOKEN"
+
+[ledger.tzzb]
+mode = "tzzb_api"
+curl_file = ".tzzb-curl"          # 相对工作目录的同花顺 cURL 文件位置
+cookie_file = ""
+api_timeout_seconds = 30
+
+[market]
+provider = "sina"                 # sina | eastmoney
+history_days = 260
+timeout_seconds = 15
+
+[paths]
+snapshots_dir = "./data/snapshots"                 # 快照输出位置
+classification_cache_dir = "./data/research"       # 天天基金穿透的1小时缓存位置
+
+[search]
+enabled = true
+provider = "opencli"
+timeout_seconds = 20
+max_results = 5
+auto_read_top_result = true
+
+[classifications]
+# 手动分类覆盖规则配置示范，高优先级
+# "510300" = { primary_class = "broad_index", sector = "" }
