@@ -57,8 +57,8 @@ class EastmoneyFundClient:
             text = self._get_with_retry(url)
             holdings = []
             matches = re.finditer(
-                r"<a\s+href=['\"]//quote\.eastmoney\.com/[^'\"]*['\"]>(\d{6})</a>"
-                r"</td>\s*<td[^>]*>\s*<a\s+href=['\"]//quote\.eastmoney\.com/[^'\"]*['\"]>([^<]+)</a>",
+                r"<a\s+href=['\"]//quote\.eastmoney\.com/[^'\"]*['\"]\s*>([A-Za-z0-9\-]+)</a>"
+                r"</td>\s*<td[^>]*>\s*<a\s+href=['\"]//quote\.eastmoney\.com/[^'\"]*['\"]\s*>([^<]+)</a>",
                 text,
             )
             for m in matches:
@@ -87,7 +87,7 @@ class EastmoneyFundClient:
             result = {}
             for match in re.finditer(r'var\s+(\w+)\s*=\s*"([^"]*)"', text):
                 result[match.group(1)] = match.group(2)
-            for match in re.finditer(r'var\s+(stockCodes|stockCodesNew|zqCodes|zqCodesNew)\s*=\s*(\[.*?\])', text):
+            for match in re.finditer(r'var\s+(stockCodes|stockCodesNew|zqCodes|zqCodesNew|Data_netWorthTrend|Data_ACWorthTrend)\s*=\s*(\[.*?\])', text):
                 try:
                     result[match.group(1)] = json.loads(match.group(2))
                 except json.JSONDecodeError:

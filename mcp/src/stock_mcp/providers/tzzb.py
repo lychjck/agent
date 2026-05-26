@@ -37,8 +37,24 @@ def extract_code(raw: Any) -> str:
     if not raw:
         return ""
     raw_str = str(raw).strip()
-    match = re.search(r"\d{6}", raw_str)
-    return match.group(0) if match else ""
+    
+    # 1. 优先匹配 6 位数字代码 (A股，或基金代码，或带前缀如 1.689009)
+    match_6d = re.search(r"\d{6}", raw_str)
+    if match_6d:
+        return match_6d.group(0)
+        
+    # 2. 其次匹配 5 位数字代码 (港股，如 00700 或 116.00700)
+    match_5d = re.search(r"\d{5}", raw_str)
+    if match_5d:
+        return match_5d.group(0)
+        
+    # 3. 匹配美股等纯英文字符或带连字符的代码 (如 PDD, AAPL, BRK-A)
+    match_us = re.search(r"[A-Za-z\-]+", raw_str)
+    if match_us:
+        return match_us.group(0)
+        
+    # 4. 兜底返回原字符串
+    return raw_str
 
 def parse_number(val: Any) -> float | None:
     if val is None or str(val).strip() == "":
@@ -202,6 +218,8 @@ class TzzbClient:
                                 value=float(parse_number(row.get("value")) or 0),
                                 profit=float(parse_number(row.get("hold_profit")) or 0),
                                 profit_rate=float(parse_number(row.get("hold_rate")) or 0) * 100,
+                                hold_days=float(parse_number(row.get("hold_days")) or 0),
+                                close_profit=float(parse_number(row.get("close_profit")) or 0),
                                 asset_class="Equity",
                                 sector="Unknown",
                             ))
@@ -231,6 +249,8 @@ class TzzbClient:
                                 value=float(parse_number(row.get("value")) or 0),
                                 profit=float(parse_number(row.get("hold_profit")) or 0),
                                 profit_rate=float(parse_number(row.get("hold_rate")) or 0) * 100,
+                                hold_days=float(parse_number(row.get("hold_days")) or 0),
+                                close_profit=float(parse_number(row.get("close_profit")) or 0),
                                 asset_class="Equity",
                                 sector="Unknown",
                             ))
@@ -253,6 +273,10 @@ class TzzbClient:
                 new_cost = total_cost / new_amount if new_amount > 0 else 0
                 new_profit_rate = (new_profit / total_cost * 100) if total_cost > 0 else 0
                 
+                # 合并 hold_days 和 close_profit
+                new_hold_days = max(exist.hold_days, h.hold_days)
+                new_close_profit = exist.close_profit + h.close_profit
+                
                 merged[h.code] = Holding(
                     code=h.code,
                     name=h.name,
@@ -262,6 +286,8 @@ class TzzbClient:
                     value=new_value,
                     profit=new_profit,
                     profit_rate=new_profit_rate,
+                    hold_days=new_hold_days,
+                    close_profit=new_close_profit,
                     asset_class=exist.asset_class,
                     sector=exist.sector,
                 )
@@ -279,6 +305,26 @@ class TzzbClient:
         cookie = self._get_cookie()
         uid = self._get_uid(cookie)
         clean = extract_code(code)
-        params = {"terminal": "1", "version": "0.0.0", "userid": uid, "user_id": uid, "code": clean}
+        params = {"terminal": "1", "version": "0.0.0", "userid": uid, "user_id": uid, "fund_code": clean}
         res = self._post(self.BS_POINT, params, cookie)
         return res.get("ex_data", {})
+
+    def fetch_fund_trans_history(self, code: str) -> List[Dict[str, Any]]:
+        """拉取场外基金的真实买卖、分红、确权交易历史明细流水"""
+        import datetime
+        cookie = self._get_cookie()
+        uid = self._get_uid(cookie)
+        clean = extract_code(code)
+        
+        # 默认回溯从2020年至今的所有历史成交
+        params = {
+            "terminal": "1",
+            "version": "0.0.0",
+            "userid": uid,
+            "user_id": uid,
+            "fund_code": clean,
+            "start_date": "20200101",
+            "end_date": datetime.datetime.now().strftime("%Y%m%d")
+        }
+        res = self._post("/caishen_fund/fund_quota/v1/trans_history", params, cookie)
+        return res.get("ex_data", {}).get("list", [])
