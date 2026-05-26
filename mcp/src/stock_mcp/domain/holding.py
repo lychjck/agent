@@ -9,6 +9,8 @@ class Holding(BaseModel):
     value: float = Field(0.0, description="当前市值")
     profit: float = Field(0.0, description="账面盈亏金额")
     profit_rate: float = Field(0.0, description="盈亏比例")
+    hold_days: float = Field(0.0, description="持有天数")
+    close_profit: float = Field(0.0, description="已实现平仓盈亏")
     asset_class: str = Field("Equity", description="资产类别，如 Equity/FixedIncome/Cash/Alternative")
     sector: str = Field("Unknown", description="行业分类")
 
