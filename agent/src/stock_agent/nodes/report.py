@@ -22,6 +22,7 @@ def _save_llm_trace(
     messages: list[BaseMessage],
     response_text: str,
     error: str | None,
+    model_name: str = "",
 ) -> None:
     """把发给 LLM 的完整 messages 和返回内容保存到 traces/ 目录"""
     try:
@@ -31,6 +32,8 @@ def _save_llm_trace(
 
         parts: list[str] = [
             f"# LLM 交互记录 ({ts})",
+            "",
+            f"**模型**: `{model_name or 'unknown'}`",
             "",
         ]
 
@@ -188,7 +191,8 @@ def report_node(state: AgentState, *, llm: Any) -> dict[str, Any]:
         err = f"llm.invoke 异常: {exc}"
 
     # 保存 LLM 交互记录供调试
-    _save_llm_trace(messages, text, err)
+    model_name = getattr(llm, "model_name", "") or getattr(llm, "model", "") or ""
+    _save_llm_trace(messages, text, err, model_name=model_name)
 
     if err is None:
         try:
