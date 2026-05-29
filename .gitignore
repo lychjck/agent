@@ -13,6 +13,7 @@ downloads/*
 !downloads/.gitkeep
 reports/*
 !reports/.gitkeep
+agent/reports/
 logs/*
 !logs/.gitkeep
 data/holdings/*
