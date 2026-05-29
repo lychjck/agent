@@ -1,0 +1,71 @@
+# ==========================================
+# Stock Agent 配置文件
+# ==========================================
+# 只包含 agent 实际需要的段：MCP 连接 + LLM 模型选择
+
+# ------------------------------------------
+# MCP 客户端：agent 要连到哪个 stock_mcp 服务
+# ------------------------------------------
+[mcp_client]
+url = "http://127.0.0.1:8766/mcp"
+token_env = "STOCK_MCP_TOKEN"  # 在 agent/.env 中设置
+
+# ------------------------------------------
+# LLM 配置
+# ------------------------------------------
+[llm]
+# 选择使用哪个 model profile（对应下面 [llm.model_profiles."..."] 的 key）
+# 留空则使用本段的 base_url / model 作为默认
+default_profile = "gemini-2.5-flash"
+
+# 默认 LLM（当 default_profile 为空或对应 profile 不存在时使用）
+base_url = "http://10.33.207.193:1234/v1"
+model = "google/gemma-4-26b-a4b"
+api_key_env = ""
+temperature = 0.2
+max_tokens = 65536
+stream = true
+
+# ------------------------------------------
+# Model Profiles（按需切换，修改上面 default_profile 即可）
+# ------------------------------------------
+
+[llm.model_profiles."gemini-2.5-flash"]
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+model = "gemini-2.5-flash"
+api_key_env = "GEMINI_API_KEY"
+stream = true
+temperature = 0.2
+max_tokens = 65536
+
+[llm.model_profiles."gemini-2.5-pro"]
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+model = "gemini-2.5-pro"
+api_key_env = "GEMINI_API_KEY"
+stream = true
+temperature = 0.2
+max_tokens = 65536
+
+[llm.model_profiles."deepseek-v4-pro"]
+base_url = "https://easyrouter.io/v1"
+model = "deepseek-v4-pro"
+api_key_env = "EASYROUTER_API_KEY"
+stream = false
+temperature = 0.2
+max_tokens = 65536
+
+[llm.model_profiles."deepseek-ai/DeepSeek-V4-Flash"]
+base_url = "https://api-inference.modelscope.cn/v1/"
+model = "deepseek-ai/DeepSeek-V4-Flash"
+api_key_env = "MODELSCOPE_API_KEY"
+stream = false
+temperature = 0.2
+max_tokens = 65536
+
+[llm.model_profiles."local-gemma"]
+base_url = "http://10.33.207.193:1234/v1"
+model = "google/gemma-4-26b-a4b"
+api_key_env = ""
+stream = true
+temperature = 0.2
+max_tokens = 65536

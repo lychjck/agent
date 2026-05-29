@@ -8,9 +8,12 @@ from langchain_openai import ChatOpenAI
 from stock_agent.config import get_llm_config
 
 
-def create_llm(config: dict[str, Any], profile: str | None = None) -> ChatOpenAI:
-    """根据配置创建 LLM 实例"""
-    llm_cfg = get_llm_config(config, profile)
+def create_llm(config: dict[str, Any]) -> ChatOpenAI:
+    """根据配置文件创建 LLM 实例。
+
+    profile 从 [llm] 段的 default_profile 字段读取，不接受命令行传参。
+    """
+    llm_cfg = get_llm_config(config)
 
     # 获取 API key
     api_key = ""

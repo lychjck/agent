@@ -31,9 +31,6 @@ def _load_env(env_path: Path = Path(".env")) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Stock Agent - LangGraph 投资诊断")
     parser.add_argument("--config", default="config.toml", help="配置文件路径")
-    parser.add_argument("--profile", default=None, help="LLM model profile 名称")
-    parser.add_argument("--mcp-url", default=None, help="MCP 服务地址（覆盖配置）")
-    parser.add_argument("--mcp-token", default=None, help="MCP Bearer Token（覆盖配置）")
     parser.add_argument("--no-stream", action="store_true", help="关闭节点级流式输出")
     args = parser.parse_args(argv)
 
@@ -45,8 +42,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"❌ 配置加载失败: {exc}", file=sys.stderr)
         return 1
 
-    mcp_url = args.mcp_url or get_mcp_url(config)
-    mcp_token = args.mcp_token or get_mcp_token(config)
+    mcp_url = get_mcp_url(config)
+    mcp_token = get_mcp_token(config)
     mcp = McpClient(url=mcp_url, token=mcp_token)
 
     print(f"🔗 连接 MCP: {mcp_url}")
@@ -58,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print("🤖 初始化 LLM...")
-    llm = create_llm(config, profile=args.profile)
+    llm = create_llm(config)
 
     print("📊 开始诊断...\n")
     app = compile_graph(mcp, llm)

@@ -42,17 +42,21 @@ def load_config(config_path: str | Path | None = None) -> dict[str, Any]:
     return toml.load(target_path)
 
 
-def get_llm_config(config: dict[str, Any], profile: str | None = None) -> dict[str, Any]:
-    """获取 LLM 配置，支持 model_profiles 切换"""
+def get_llm_config(config: dict[str, Any]) -> dict[str, Any]:
+    """获取 LLM 配置。
+
+    如果 [llm] 段有 default_profile 且对应的 model_profiles 存在，
+    则合并 profile 配置到基础配置。profile 只从配置文件读取。
+    """
     llm_cfg = config.get("llm", {})
-    
+    profile = str(llm_cfg.get("default_profile", "")).strip() or None
+
     if profile and profile in llm_cfg.get("model_profiles", {}):
-        # 合并 profile 配置到基础配置
-        base = {k: v for k, v in llm_cfg.items() if k != "model_profiles"}
+        base = {k: v for k, v in llm_cfg.items() if k not in ("model_profiles", "default_profile")}
         base.update(llm_cfg["model_profiles"][profile])
         return base
-    
-    return {k: v for k, v in llm_cfg.items() if k != "model_profiles"}
+
+    return {k: v for k, v in llm_cfg.items() if k not in ("model_profiles", "default_profile")}
 
 
 def get_mcp_url(config: dict[str, Any]) -> str:
