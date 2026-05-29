@@ -1,62 +1,121 @@
-"""LangGraph 状态图构建"""
+"""LangGraph 状态图
+
+图结构：
+
+    START
+      │
+      ▼
+   diagnose ── errors? ──▶ error_handler ── END
+      │ no
+      ▼
+   should_investigate? ─────────┐
+      │ yes                     │ no
+      ▼                         │
+   investigate                  │
+      │                         │
+      └─Send─▶ research_holding ─┤   (并行 fan-out)
+      └─Send─▶ research_theme ───┤
+                                 │
+                                 ▼
+                              report ── errors? ──▶ error_handler ── END
+                                 │ no
+                                 ▼
+                              render ──▶ END
+"""
+
+from __future__ import annotations
 
 from functools import partial
 from typing import Any, Literal
 
-from langgraph.graph import StateGraph, END
+from langgraph.graph import END, START, StateGraph
 
-from stock_agent.state import AgentState
 from stock_agent.mcp_client import McpClient
-from stock_agent.nodes.diagnose import diagnose_node
-from stock_agent.nodes.investigate import investigate_node
-from stock_agent.nodes.report import report_node
+from stock_agent.nodes import (
+    diagnose_node,
+    dispatch_to_research,
+    error_handler_node,
+    investigate_dispatch,
+    render_node,
+    report_node,
+    research_holding,
+    research_theme,
+)
+from stock_agent.state import AgentState
 
 
-def route_after_diagnose(state: AgentState) -> Literal["investigate", "report"]:
-    """诊断后路由：有异常则探案，无异常直接出报告"""
-    if state.get("anomalies"):
-        return "investigate"
-    return "report"
+# ---------- 条件边 ----------
 
+def _has_errors(state: AgentState) -> Literal["error", "ok"]:
+    return "error" if state.get("errors") else "ok"
+
+
+def _should_investigate(state: AgentState) -> Literal["investigate", "report"]:
+    """没有持仓直接跳过研究；有研究价值才进 investigate"""
+    holdings = state.get("holdings", []) or []
+    if not holdings:
+        return "report"
+    profile = state.get("portfolio_profile", {}) or {}
+    total_value = profile.get("total_value", 0) or 0
+    # 至少要有一个权重 >=1% 的标的或一个主题暴露才值得研究
+    has_core = any(
+        (h.get("weight_pct") or 0) >= 1.0
+        or (total_value > 0 and (h.get("value", 0) or 0) / total_value * 100 >= 1.0)
+        for h in holdings
+    )
+    return "investigate" if has_core else "report"
+
+
+# ---------- 图构建 ----------
 
 def build_graph(mcp: McpClient, llm: Any) -> StateGraph:
-    """
-    构建投资诊断 Agent 的状态图
-    
-    流程:
-        START → diagnose → [有异常?] → investigate → report → END
-                                    → report → END
-    """
-    graph = StateGraph(AgentState)
+    g = StateGraph(AgentState)
 
-    # 注册节点（通过 partial 注入依赖）
-    graph.add_node("diagnose", partial(diagnose_node, mcp=mcp))
-    graph.add_node("investigate", partial(investigate_node, mcp=mcp))
-    graph.add_node("report", partial(report_node, llm=llm))
+    g.add_node("diagnose", partial(diagnose_node, mcp=mcp))
+    g.add_node("investigate", investigate_dispatch)
+    g.add_node("research_holding", partial(research_holding, mcp=mcp))
+    g.add_node("research_theme", partial(research_theme, mcp=mcp))
+    g.add_node("report", partial(report_node, llm=llm))
+    g.add_node("render", partial(render_node, mcp=mcp))
+    g.add_node("error_handler", error_handler_node)
 
-    # 设置入口
-    graph.set_entry_point("diagnose")
+    g.add_edge(START, "diagnose")
 
-    # 条件路由：诊断后根据是否有异常决定下一步
-    graph.add_conditional_edges(
+    # diagnose 之后：错了走兜底，否则判断要不要 investigate
+    g.add_conditional_edges(
         "diagnose",
-        route_after_diagnose,
+        lambda s: "error" if s.get("errors") else _should_investigate(s),
         {
+            "error": "error_handler",
             "investigate": "investigate",
             "report": "report",
         },
     )
 
-    # 探案完成后进入报告
-    graph.add_edge("investigate", "report")
+    # investigate 用条件边发 Send 完成 fan-out
+    g.add_conditional_edges(
+        "investigate",
+        dispatch_to_research,
+        ["research_holding", "research_theme", "report"],
+    )
 
-    # 报告完成后结束
-    graph.add_edge("report", END)
+    # 没有任何研究目标时（dispatch 返回空），LangGraph 会直接跳过 fan-out 走默认 fallback；
+    # 这里给 research_* 子节点统一连到 report，让 fan-in 自然完成
+    g.add_edge("research_holding", "report")
+    g.add_edge("research_theme", "report")
 
-    return graph
+    # report 之后：错了走兜底，否则进 render
+    g.add_conditional_edges(
+        "report",
+        _has_errors,
+        {"error": "error_handler", "ok": "render"},
+    )
+
+    g.add_edge("render", END)
+    g.add_edge("error_handler", END)
+
+    return g
 
 
 def compile_graph(mcp: McpClient, llm: Any):
-    """编译状态图为可执行的 Runnable"""
-    graph = build_graph(mcp, llm)
-    return graph.compile()
+    return build_graph(mcp, llm).compile()
