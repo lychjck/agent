@@ -7,17 +7,39 @@ from typing import Any
 import toml
 
 
-def load_config(config_path: Path | None = None) -> dict[str, Any]:
-    """加载 config.toml 配置"""
-    if config_path is None:
-        # 默认从项目根目录加载
-        config_path = Path(__file__).parent.parent.parent.parent / "config.toml"
+def load_config(config_path: str | Path | None = None) -> dict[str, Any]:
+    """加载 config.toml 配置，如果找不到则自适应逐级向上寻找"""
+    target_path = None
     
-    if not config_path.exists():
-        raise FileNotFoundError(f"配置文件不存在: {config_path}")
-    
-    config = toml.load(config_path)
-    return config
+    if config_path:
+        path = Path(config_path)
+        if path.is_absolute() or path.exists():
+            target_path = path
+        else:
+            target_name = path.name
+    else:
+        target_name = "config.toml"
+
+    # 如果还没确定路径，采用逐级向上寻找机制
+    if target_path is None:
+        # 1. 尝试从当前文件所在位置逐级向上寻找
+        curr = Path(__file__).resolve().parent
+        for parent in curr.parents:
+            candidate = parent / target_name
+            if candidate.exists():
+                target_path = candidate
+                break
+
+    if target_path is None:
+        # 2. 尝试从当前工作目录寻找
+        candidate = Path.cwd() / target_name
+        if candidate.exists():
+            target_path = candidate
+
+    if target_path is None or not target_path.exists():
+        raise FileNotFoundError(f"配置文件 '{target_name}' 未找到，已尝试在各级父目录及当前工作目录下搜寻。")
+
+    return toml.load(target_path)
 
 
 def get_llm_config(config: dict[str, Any], profile: str | None = None) -> dict[str, Any]:
