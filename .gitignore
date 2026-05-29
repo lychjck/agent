@@ -15,6 +15,7 @@ reports/*
 !reports/.gitkeep
 agent/reports/
 agent/config.toml
+agent/traces/
 logs/*
 !logs/.gitkeep
 data/holdings/*

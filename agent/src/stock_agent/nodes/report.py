@@ -2,14 +2,63 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
+from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
 from stock_agent.nodes._safe import safe_node
 from stock_agent.schema import agent_report_schema_hint, load_agent_report_json
 from stock_agent.state import AgentState
+
+
+# LLM 交互记录保存目录
+_TRACES_DIR = Path(__file__).resolve().parent.parent.parent.parent / "traces"
+
+
+def _save_llm_trace(
+    messages: list[BaseMessage],
+    response_text: str,
+    error: str | None,
+) -> None:
+    """把发给 LLM 的完整 messages 和返回内容保存到 traces/ 目录"""
+    try:
+        _TRACES_DIR.mkdir(parents=True, exist_ok=True)
+        ts = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        trace_file = _TRACES_DIR / f"{ts}-llm-chat.md"
+
+        parts: list[str] = [
+            f"# LLM 交互记录 ({ts})",
+            "",
+        ]
+
+        for msg in messages:
+            role = msg.__class__.__name__.replace("Message", "").upper()
+            content = msg.content if hasattr(msg, "content") else str(msg)
+            parts.append(f"## {role}")
+            parts.append("")
+            parts.append(content)
+            parts.append("")
+            parts.append("---")
+            parts.append("")
+
+        parts.append("## LLM RESPONSE")
+        parts.append("")
+        if error:
+            parts.append(f"**ERROR**: {error}")
+            parts.append("")
+        if response_text:
+            parts.append("```json")
+            parts.append(response_text)
+            parts.append("```")
+        else:
+            parts.append("*(empty)*")
+
+        trace_file.write_text("\n".join(parts), encoding="utf-8")
+    except Exception:
+        pass  # 保存失败不影响主流程
 
 
 REPORT_SYSTEM_PROMPT = """你是严格基于事实证据的中文持仓诊断模型。
@@ -137,6 +186,9 @@ def report_node(state: AgentState, *, llm: Any) -> dict[str, Any]:
         text = resp.content if hasattr(resp, "content") else str(resp)
     except Exception as exc:  # noqa: BLE001
         err = f"llm.invoke 异常: {exc}"
+
+    # 保存 LLM 交互记录供调试
+    _save_llm_trace(messages, text, err)
 
     if err is None:
         try:
