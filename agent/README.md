@@ -39,6 +39,17 @@ agent/
 
 ## 运行
 
+需要先在 `config.toml` 里配置 MCP 客户端段（明确 agent 要连到哪个 MCP）：
+
+```toml
+[mcp_client]
+url = "http://127.0.0.1:9099/mcp"
+# 如需鉴权：
+# token_env = "STOCK_MCP_TOKEN"
+```
+
+然后启动：
+
 ```bash
 cd agent
 uv run python -m stock_agent

@@ -317,3 +317,10 @@ auth_token = ""
 allow_unauthenticated = true
 
 
+
+[mcp_client]
+# Agent 端读：要连到哪个 MCP 服务（与 [server] 段语义无关，[server] 是 MCP 服务端自己的监听）
+url = "http://127.0.0.1:8766/mcp"
+# 如需鉴权，二选一：
+# token = "明文 token（不推荐）"
+# token_env = "STOCK_MCP_TOKEN"

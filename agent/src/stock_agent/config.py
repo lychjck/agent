@@ -56,16 +56,51 @@ def get_llm_config(config: dict[str, Any], profile: str | None = None) -> dict[s
 
 
 def get_mcp_url(config: dict[str, Any]) -> str:
-    """获取 MCP 服务地址"""
-    server_cfg = config.get("server", {})
-    host = server_cfg.get("http_host", "127.0.0.1")
-    port = server_cfg.get("http_port", 8766)
-    path = server_cfg.get("http_path", "/mcp")
-    return f"http://{host}:{port}{path}"
+    """获取 MCP 服务地址。
+
+    优先读 [mcp_client] 段（agent 视角：连到哪），不存在时直接报错。
+    [server] 段是 MCP 服务端自己的监听配置，agent 不应当读取。
+    """
+    cfg = config.get("mcp_client")
+    if not isinstance(cfg, dict):
+        raise RuntimeError(
+            "config.toml 缺少 [mcp_client] 段，请配置 url，例如：\n"
+            "[mcp_client]\nurl = \"http://127.0.0.1:9099/mcp\""
+        )
+
+    url = str(cfg.get("url", "")).strip()
+    if url:
+        return url
+
+    # 拆分形式兼容：host + port + path
+    host = cfg.get("host")
+    port = cfg.get("port")
+    path = cfg.get("path", "/mcp")
+    if host and port:
+        return f"http://{host}:{port}{path}"
+
+    raise RuntimeError(
+        "[mcp_client] 必须提供 url，或同时提供 host + port，例如：\n"
+        "[mcp_client]\nurl = \"http://127.0.0.1:9099/mcp\""
+    )
 
 
 def get_mcp_token(config: dict[str, Any]) -> str:
-    """获取 MCP Bearer Token"""
-    server_cfg = config.get("server", {})
-    token_env = server_cfg.get("auth_token_env", "STOCK_MCP_TOKEN")
-    return os.environ.get(token_env, "").strip()
+    """获取 MCP Bearer Token
+
+    支持两种来源（按优先级）：
+    1. [mcp_client] token = "..."  直接写明文（不推荐）
+    2. [mcp_client] token_env = "STOCK_MCP_TOKEN"  从环境变量读取
+    """
+    cfg = config.get("mcp_client", {})
+    if not isinstance(cfg, dict):
+        return ""
+
+    token = str(cfg.get("token", "")).strip()
+    if token:
+        return token
+
+    token_env = str(cfg.get("token_env", "")).strip()
+    if token_env:
+        return os.environ.get(token_env, "").strip()
+    return ""
